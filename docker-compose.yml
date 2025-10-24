@@ -1,31 +1,12 @@
 version: '3.7'
 
 services:
-  ros_controller:
-    # Build the image using the Dockerfile in the current directory
-    build:
-      context: . 
-      dockerfile: Dockerfile
-    
-    # ESSENTIAL: Give the container full access to the Pi's hardware (for GPIO/SPI)
-    privileged: true 
-    
-    # Recommended for ROS networking: use the Pi's host network interface
-    # This simplifies connecting from your dev machine over the VPN
-    network_mode: "host" 
-    
-    # Set ROS environment variables to point to the ROS Master (roscore) running in this same container
-    environment:
-      - ROS_MASTER_URI=http://localhost:11311
-      - ROS_IP=127.0.0.1
-    
-    # Assign a memorable name to the container
+  # ... (other service details)
+  ros:
     container_name: frankenmolder_ros
-    
-    # Ensure the container tries to restart if it crashes
-    restart: always
-    
-    # Copy the wrapper script into the container (used by the ENTRYPOINT)
-    # The first "." is the local path, the second is the container path
-    volumes:
-      - ./start_node.sh:/app/start_node.sh
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # CRITICAL: This executes your script AND keeps the container alive
+    command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
+    # ... (rest of your settings like privileged, ports, restart, etc.)
