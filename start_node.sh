@@ -26,4 +26,17 @@ echo "View logs with: docker logs injection_molding_ros"
 
 # Keep the container running indefinitely (otherwise it exits)
 # This will log any output from the background tasks (roscore, rosnode)
-tail -f /dev/null
+# ... (Your previous commands are here)
+
+echo "ROS system initialized."
+
+# --- NEW: Use an infinite loop or a sleep command to keep the script running ---
+
+# Option A (Recommended: A simple, robust loop)
+while true; do sleep 1000; done
+
+# Option B (Alternative: Just keep streaming output - less robust for blocking)
+# tail -f /dev/null
+
+# Option C (If the base image has it: run bash indefinitely)
+# /bin/bash
