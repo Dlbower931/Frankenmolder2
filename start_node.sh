@@ -1,11 +1,9 @@
 #!/bin/bash
 
-# Source the ROS environment
+# Source the core ROS environment
 source /opt/ros/noetic/setup.bash
 
-# --- CRITICAL FIX: Source the correct aggregate setup file ---
-# Isolated builds often use the 'install_isolated' path structure
-# The final aggregate install file is generally the most reliable one to source.
+# --- FIX: Source the correct aggregate path for the isolated build ---
 source /app/devel_isolated/setup.bash 
 
 # Start ROS Master (roscore) in the background
