@@ -1,9 +1,0 @@
-services:
-  frankenmolder:
-    build: .
-    environment:
-      - DISPLAY=${DISPLAY}     # pass through your current display
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix  # share the X11 socket with the container
-    devices:
-      - /dev/vchiq             # (optional) gives access to Pi GPU for hardware accel
