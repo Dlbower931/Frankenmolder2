@@ -14,11 +14,10 @@ echo "Waiting 5 seconds for ROS Master..."
 sleep 5
 
 # Start your ROS Node in the background
-# The package is 'temperature_sensor_pkg' and the executable is 'temp_publisher_node.py'
 rosrun temperature_sensor_pkg temp_publisher_node.py &
 
 echo "ROS services are running in the background."
 echo "Check status with: docker exec frankenmolder_ros rosnode list"
 
-# Keep the container running indefinitely (otherwise it exits)
+# Keep the container running indefinitely
 while true; do sleep 1000; done
