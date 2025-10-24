@@ -37,7 +37,7 @@ RUN chmod +x /app/start_node.sh
 # This step creates the 'devel' directory and makes your package runnable
 RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
     cd /app; \
-    /opt/ros/noetic/bin/catkin_make"
+    catkin_make"
 
 # Add the ROS setup source to the bashrc for convenience
 RUN echo "source /app/devel/setup.bash" >> ~/.bashrc
