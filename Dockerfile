@@ -24,6 +24,10 @@ RUN pip3 install \
 # This assumes your package folder is next to the Dockerfile
 COPY ./temperature_sensor_pkg /app/src/temperature_sensor_pkg
 
+RUN mkdir -p /app/src/
+# 2. Copy the package folder into the src directory
+COPY ./temperature_sensor_pkg /app/src/temperature_sensor_pkg
+
 # Build the ROS workspace (using catkin_make)
 # We execute this inside a bash shell that has sourced the ROS environment
 RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
