@@ -1,12 +1,14 @@
 version: '3.7'
 
 services:
-  # ... (other service details)
   ros:
     container_name: frankenmolder_ros
     build:
       context: .
       dockerfile: Dockerfile
-    # CRITICAL: This executes your script AND keeps the container alive
+    # CRITICAL: Set ROS Master URI to point to the container itself
+    environment:
+      - ROS_MASTER_URI=http://localhost:11311
+      - ROS_IP=127.0.0.1  # Optional, but helps internal communication
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
     # ... (rest of your settings like privileged, ports, restart, etc.)

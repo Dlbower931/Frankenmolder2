@@ -2,7 +2,11 @@
 
 # Source the ROS environment
 source /opt/ros/noetic/setup.bash
-source /app/devel/setup.bash
+
+# --- CRITICAL FIX: Source the correct aggregate setup file ---
+# Isolated builds often use the 'install_isolated' path structure
+# The final aggregate install file is generally the most reliable one to source.
+source /app/install_isolated/setup.bash 
 
 # Start ROS Master (roscore) in the background
 roscore &
@@ -15,10 +19,5 @@ rosrun temperature_sensor_pkg temp_publisher_node.py &
 
 echo "ROS services are running in the background."
 
-# ----------------------------------------------------
-# 2. The Final Blocking Command (Crucial)
-# ----------------------------------------------------
-
-# This command MUST be a blocking command that never exits.
-# If this command finishes, the container stops (exits with code 0).
+# Keep the container running
 while true; do sleep 1000; done
