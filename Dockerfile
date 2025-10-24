@@ -16,10 +16,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the Python spidev library for SPI communication
-# The '--break-system-packages' is often needed in newer Linux/Docker environments
+# NOTE: We have removed the unsupported '--break-system-packages' option.
 RUN pip3 install \
-    spidev \
-    --break-system-packages
+    spidev
 
 # Copy your ROS package source code into the container
 # This assumes your package folder is next to the Dockerfile
