@@ -1,5 +1,5 @@
-FROM python:3.11-slim      # base OS + Python runtime for ARM on Pi
+FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-WORKDIR /app               # set working directory inside the image
-COPY main.py .              # copy your code into the image
-CMD ["python", "main.py"]   # default process when container starts
+WORKDIR /app
+COPY app.py .
+CMD ["python", "app.py"]
