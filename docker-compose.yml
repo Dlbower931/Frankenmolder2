@@ -6,9 +6,23 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # CRITICAL: Set ROS Master URI to point to the container itself
+    # CRITICAL: Need full access to hardware devices (SPI)
+    privileged: true
+    restart: always 
+    
+    # Environment variables for ROS networking
     environment:
+      # Tells roscore and the node to look for the Master on localhost
       - ROS_MASTER_URI=http://localhost:11311
-      - ROS_IP=127.0.0.1  # Optional, but helps internal communication
+      - ROS_IP=127.0.0.1 
+      
+    # Ports exposed to the host machine (Pi)
+    ports:
+      - "11311:11311" # ROS Master
+      
+    # Map the SPI devices from the host to the container
+    devices:
+      - /dev/spidev0.0:/dev/spidev0.0
+      
+    # Command to execute the startup script and keep the container running
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
-    # ... (rest of your settings like privileged, ports, restart, etc.)
