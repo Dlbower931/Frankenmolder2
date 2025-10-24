@@ -27,7 +27,7 @@ RUN mkdir -p /app/src/
 COPY ./temperature_sensor_pkg /app/src/temperature_sensor_pkg
 
 # 3. Copy the REQUIRED top-level workspace CMakeLists.txt
-COPY CMakeLists.txt /app/src/CMakeLists.txt
+COPY CMakeLists.txt /app/temperature_sensor_pkg/CMakeLists.txt
 
 # 4. Copy the startup script and make it executable (THIS IS THE MISSING PART)
 COPY start_node.sh /app/start_node.sh
