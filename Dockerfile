@@ -20,9 +20,6 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install \
     spidev
 
-# Copy your ROS package source code into the container
-# This assumes your package folder is next to the Dockerfile
-COPY ./temperature_sensor_pkg /app/src/temperature_sensor_pkg
 
 RUN mkdir -p /app/src/
 # 2. Copy the package folder into the src directory
