@@ -3,26 +3,11 @@ version: '3.7'
 services:
   ros:
     container_name: frankenmolder_ros
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # CRITICAL: Need full access to hardware devices (SPI)
-    privileged: true
-    restart: always 
+    # ... (other settings like build, privileged, ports, environment)
     
-    # Environment variables for ROS networking
-    environment:
-      # Tells roscore and the node to look for the Master on localhost
-      - ROS_MASTER_URI=http://localhost:11311
-      - ROS_IP=127.0.0.1 
-      
-    # Ports exposed to the host machine (Pi)
-    ports:
-      - "11311:11311" # ROS Master
-      
-    # Map the SPI devices from the host to the container
-    devices:
-      - /dev/spidev0.0:/dev/spidev0.0
-      
-    # Command to execute the startup script and keep the container running
+    # --- CRITICAL FIX: Add a Volume for Persistent Logging ---
+    volumes:
+      - ./pi_ros_logs:/data/ros_logs 
+      # This links the local 'pi_ros_logs' folder to '/data/ros_logs' inside the container
+
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
