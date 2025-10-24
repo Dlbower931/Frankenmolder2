@@ -1,13 +1,30 @@
-version: '3.7'
-
 services:
   ros:
     container_name: frankenmolder_ros
-    # ... (other settings like build, privileged, ports, environment)
     
-    # --- CRITICAL FIX: Add a Volume for Persistent Logging ---
+    # --- CRITICAL FIX: Ensure 'build' has exactly 2 spaces of indentation ---
+    build:
+      # Ensure 'context' and 'dockerfile' have exactly 4 spaces
+      context: .
+      dockerfile: Dockerfile
+    
+    privileged: true
+    restart: always 
+    
+    # Environment variables for ROS networking
+    environment:
+      - ROS_MASTER_URI=http://localhost:11311
+      - ROS_IP=127.0.0.1 
+      
+    ports:
+      - "11311:11311"
+      
+    devices:
+      - /dev/spidev0.0:/dev/spidev0.0
+      
+    # Make sure this volumes block is also indented correctly (2 spaces)
     volumes:
       - ./pi_ros_logs:/data/ros_logs 
-      # This links the local 'pi_ros_logs' folder to '/data/ros_logs' inside the container
-
+      
+    # Make sure this command block is indented correctly (2 spaces)
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
