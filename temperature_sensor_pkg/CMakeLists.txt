@@ -1,17 +1,19 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(temperature_sensor_pkg)
 
-# Find necessary packages for Catkin build
+# --- Find ROS dependencies (REQUIRED) ---
 find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
 )
 
-# Set up the Catkin build environment
+# --- Catkin Setup (REQUIRED) ---
+# This line must be present for any Catkin package
 catkin_package()
 
-# Install the Python scripts
-# This makes your Python file discoverable by 'rosrun'
+# --- Install Python Scripts (CRUCIAL) ---
+# This line registers your Python script to be found by 'rosrun'.
+# PROGRAMS is correct for python executables.
 install(PROGRAMS
   src/temp_publisher_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
