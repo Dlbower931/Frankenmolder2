@@ -1,14 +1,18 @@
-# Top-level workspace file
 cmake_minimum_required(VERSION 3.0.2)
-project(catkin_workspace)
+project(temperature_sensor_pkg)
 
-# Find catkin and other packages
-find_package(catkin REQUIRED)
+# Find necessary packages for Catkin build
+find_package(catkin REQUIRED COMPONENTS
+  rospy
+  std_msgs
+)
 
-# Tell catkin where to find packages
-# It looks for subdirectories containing 'package.xml'
-# 'src' is the standard directory name
-catkin_workspace()
+# Set up the Catkin build environment
+# This is the standard package macro, NOT catkin_workspace()
+catkin_package()
 
-# Uncomment the following to restrict your build to a subset of packages
-# add_subdirectory(src/your_package_name)
+# Install the Python scripts so they can be run with 'rosrun'
+install(PROGRAMS
+  src/temp_publisher_node.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
