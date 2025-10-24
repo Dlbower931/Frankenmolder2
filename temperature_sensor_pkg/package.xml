@@ -5,8 +5,9 @@
   <description>ROS package to read MAX6675 temperature and publish it as a topic.</description>
 
   <maintainer email="user@todo.todo">Your Name</maintainer>
-
   <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
 
   <depend>rospy</depend>
   <depend>std_msgs</depend>
