@@ -13,16 +13,21 @@ sleep 5
 rosrun temperature_sensor_pkg extruder_zone1_temp_node.py &
 rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 
+# Start Control Nodes
+rosrun temperature_sensor_pkg extruder_zone1_control_node.py &
+
 # Start Background Logging
 echo "Starting background rosbag recording..."
-LOG_DIR="/data/ros_logs"
+LOG_DIR="/data/ros_logs" # Use the mounted volume path
 mkdir -p $LOG_DIR
-rosbag record -a -o $LOG_DIR/frankenmolder_log -G 3600 &
+# Record all topics (-a), save to LOG_DIR, name with date+time prefix (-o)
+# REMOVED the '-G 3600' option
+rosbag record -a -o $LOG_DIR/frankenmolder_log &
+# ------------------------------------------------
 
-# --- ADD THIS LINE: Launch the Topic Watchdog ---
+# Launch the Topic Watchdog (using the new package name)
 rosrun frankenmolder_utils topic_watchdog.py &
-# ---------------------------------------------
 
 echo "ROS services are running in the background."
 while true; do sleep 1000; done
-```
+
