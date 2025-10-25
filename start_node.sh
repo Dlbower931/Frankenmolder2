@@ -16,12 +16,13 @@ rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 # Start Control Nodes
 # rosrun temperature_sensor_pkg extruder_zone1_control_node.py & # Removed as it doesn't exist yet
 
-# Start Background Logging
-echo "Starting background rosbag recording..."
+# Start Background Logging for a fixed duration
+echo "Starting background rosbag recording (30 second segments)..."
 LOG_DIR="/data/ros_logs" # Use the mounted volume path
 mkdir -p $LOG_DIR
-# Record all topics (-a), save to LOG_DIR, name with date+time prefix (-o), split every 1000 messages (-L 1000)
-rosbag record -a -o $LOG_DIR/frankenmolder_log -L 1000 &
+# Record all topics (-a), save to LOG_DIR, name with date+time prefix (-o), record for 30 seconds (--duration=30s)
+# Note: This command will EXIT after 30 seconds. To make it continuous, it needs to be wrapped in a loop.
+(cd $LOG_DIR && rosbag record -a -o frankenmolder_log --duration=30s) &
 # ------------------------------------------------
 
 # Launch the Topic Watchdog (using the new package name)
