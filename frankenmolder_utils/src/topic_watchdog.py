@@ -95,19 +95,3 @@ if __name__ == '__main__':
         rospy.loginfo("Topic Watchdog shutting down.")
     except Exception as e:
         rospy.logerr(f"Topic Watchdog crashed: {e}")
-```
-
----
-
-## 3. Update `Dockerfile`
-
-Make the new watchdog script executable.
-
-```dockerfile
-# ... (chmod lines for sensor/control nodes)
-RUN chmod +x /app/src/temperature_sensor_pkg/src/extruder_zone1_control_node.py
-
-# --- ADD THIS LINE for the watchdog ---
-RUN chmod +x /app/src/temperature_sensor_pkg/src/topic_watchdog.py
-
-# ... (Build step)

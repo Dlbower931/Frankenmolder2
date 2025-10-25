@@ -25,6 +25,7 @@ RUN pip3 install spidev
 RUN mkdir -p /app/src/temperature_sensor_pkg
 COPY temperature_sensor_pkg /app/src/temperature_sensor_pkg
 COPY frankenmolder_gui /app/src/frankenmolder_gui 
+COPY frankenmolder_utils /app/src/frankenmolder_utils
 
 # Copy and make the top-level start script executable
 COPY start_node.sh /app/start_node.sh
@@ -34,6 +35,7 @@ RUN chmod +x /app/start_node.sh
 RUN chmod +x /app/src/frankenmolder_gui/src/extruder_gui_node.py
 RUN chmod +x /app/src/temperature_sensor_pkg/src/extruder_zone1_temp_node.py
 RUN chmod +x /app/src/temperature_sensor_pkg/src/extruder_zone2_temp_node.py
+RUN chmod +x /app/src/frankenmolder_utils/src/topic_watchdog.py
 
 # Build the Catkin workspace (isolated build method)
 RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
