@@ -88,12 +88,12 @@ class ExtruderGUI(tk.Frame):
             # Setpoint Control
             tk.Label(zone_frame, text="Set (°C):").grid(row=2, column=0, sticky="w", pady=(10, 2))
             # **FIX:** Increase Entry width and font size
-            entry = tk.Entry(zone_frame, textvariable=self.tk_target_setpoints[zone_id], width=8, font=control_font)
+            entry = tk.Entry(zone_frame, textvariable=self.tk_target_setpoints[zone_id], width=40, font=control_font)
             entry.grid(row=2, column=1, columnspan=2, sticky="e", pady=(10, 2))
             # **FIX:** Increase Button font size
             set_button = tk.Button(zone_frame, text="Set", font=control_font,
                                    command=lambda zid=zone_id: self.publish_setpoint(zid))
-            set_button.grid(row=2, column=3, sticky="w", padx=(5,0), pady=(10, 2))
+            set_button.grid(row=2, column=3, sticky="w", padx=(10,0), pady=(20, 2))
 
         # Status Bar
         status_bar = tk.Label(self.master, textvariable=self.message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
