@@ -64,17 +64,18 @@ class ExtruderGUI(tk.Frame):
         barrel_frame.pack(fill=tk.X, expand=True)
 
         # Define a larger font for controls
-        control_font = ("Arial", 12)
+        control_font = ("Arial", 14) # Increased font size
+        temp_font = ("Arial", 18, "bold") # Larger font for temperature reading
 
         for i in range(1, ZONE_COUNT + 1):
             zone_id = f"zone{i}"
-            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i}", padx=10, pady=10, font=("Arial", 10))
+            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i}", padx=10, pady=10, font=("Arial", 12)) # Larger frame label
             zone_frame.grid(row=0, column=i-1, padx=5, pady=5, sticky="nsew")
             barrel_frame.grid_columnconfigure(i-1, weight=1)
 
             # Temperature Display
             tk.Label(zone_frame, text="Temp:").grid(row=0, column=0, sticky="w", pady=2)
-            temp_label = tk.Label(zone_frame, textvariable=self.tk_current_temps[zone_id], font=("Arial", 16))
+            temp_label = tk.Label(zone_frame, textvariable=self.tk_current_temps[zone_id], font=temp_font) # Use larger temp font
             temp_label.grid(row=0, column=1, columnspan=2, sticky="e", pady=2)
             tk.Label(zone_frame, text="°C").grid(row=0, column=3, sticky="w", pady=2)
 
@@ -87,13 +88,18 @@ class ExtruderGUI(tk.Frame):
 
             # Setpoint Control
             tk.Label(zone_frame, text="Set (°C):").grid(row=2, column=0, sticky="w", pady=(10, 2))
-            # **FIX:** Increase Entry width and font size
-            entry = tk.Entry(zone_frame, textvariable=self.tk_target_setpoints[zone_id], width=40, font=control_font)
-            entry.grid(row=2, column=1, columnspan=2, sticky="e", pady=(10, 2))
-            # **FIX:** Increase Button font size
-            set_button = tk.Button(zone_frame, text="Set", font=control_font,
+            # **FIX:** Increase Entry width significantly
+            entry = tk.Entry(zone_frame, textvariable=self.tk_target_setpoints[zone_id], width=10, font=control_font) # Increased width to 10
+            entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(10, 2)) # Use sticky="ew" to make it expand
+            # **FIX:** Increase Button font size and add padding
+            set_button = tk.Button(zone_frame, text="Set", font=control_font, padx=10, pady=3, # Added padding
                                    command=lambda zid=zone_id: self.publish_setpoint(zid))
-            set_button.grid(row=2, column=3, sticky="w", padx=(10,0), pady=(20, 2))
+            set_button.grid(row=2, column=3, sticky="ew", padx=(5,0), pady=(10, 2)) # Use sticky="ew"
+
+            # Configure column weights within the zone frame for better resizing
+            zone_frame.grid_columnconfigure(1, weight=1)
+            zone_frame.grid_columnconfigure(2, weight=1)
+
 
         # Status Bar
         status_bar = tk.Label(self.master, textvariable=self.message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
@@ -185,6 +191,7 @@ class ExtruderGUI(tk.Frame):
             rospy.logerr(f"GUI: Failed to initialize ROS comms: {e}")
             messagebox.showerror("ROS Initialization Error", f"Failed to initialize ROS publishers/subscribers: {e}")
             return False
+
 
 # --- SECTION: Main Execution ---
 
