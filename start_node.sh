@@ -17,7 +17,6 @@ rosrun temperature_sensor_pkg extruder_zone1_temp_node.py &
 rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 
 # Launch Foxglove Bridge (assuming you kept this from the previous steps)
-roslaunch temperature_sensor_pkg foxglove_tailscale.launch & 
 
 echo "ROS services are running in the background."
 while true; do sleep 1000; done

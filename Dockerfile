@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     git \
     build-essential \
-    ros-noetic-foxglove-bridge \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the necessary Python library (e.g., spidev)
