@@ -10,6 +10,6 @@ catkin_package()
 
 # Install Python scripts
 install(PROGRAMS
-  src/frankenmolder_gui_node.py
+  src/extruder_gui_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

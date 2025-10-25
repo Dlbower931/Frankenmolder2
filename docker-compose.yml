@@ -15,17 +15,17 @@ services:
     
     # ENVIRONMENT VARIABLES CAN NOW BE SIMPLER
     environment:
-      # ROS Master URI should now point to the host IP (your Tailscale IP)
+      # Pass the host's display environment variable into the container
+      - DISPLAY=${DISPLAY} 
+
+      # ... (existing ROS_MASTER_URI and ROS_IP settings)
       - ROS_MASTER_URI=http://100.119.150.8:11311
-      # ROS_IP can be set to the host IP as well
       - ROS_IP=100.119.150.8
-    # REMOVE THE 'ports:' SECTION ENTIRELY 
-    # The ports 11311 and 8080 are automatically exposed by 'network_mode: host'
-    
-    devices:
-      - /dev/spidev0.0:/dev/spidev0.0
       
     volumes:
+      # Mount the X11 Unix socket into the container to enable GUI access
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw 
+      # ... (existing pi_ros_logs volume)
       - ./pi_ros_logs:/data/ros_logs 
       
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
