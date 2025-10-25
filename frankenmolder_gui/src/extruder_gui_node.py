@@ -63,42 +63,46 @@ class ExtruderGUI(tk.Frame):
         barrel_frame = tk.Frame(main_frame)
         barrel_frame.pack(fill=tk.X, expand=True)
 
-        # Define a larger font for controls
-        control_font = ("Arial", 14) # Increased font size
-        temp_font = ("Arial", 18, "bold") # Larger font for temperature reading
+        # Define larger fonts for better visibility on a small screen
+        control_font = ("Arial", 16) # Increased font size for controls
+        temp_font = ("Arial", 20, "bold") # Even larger font for temperature reading
+        label_font = ("Arial", 12) # Font for descriptive labels
 
         for i in range(1, ZONE_COUNT + 1):
             zone_id = f"zone{i}"
-            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i}", padx=10, pady=10, font=("Arial", 12)) # Larger frame label
+            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i}", padx=10, pady=10, font=("Arial", 12))
             zone_frame.grid(row=0, column=i-1, padx=5, pady=5, sticky="nsew")
-            barrel_frame.grid_columnconfigure(i-1, weight=1)
+            barrel_frame.grid_columnconfigure(i-1, weight=1) # Allow zones to expand horizontally
 
-            # Temperature Display
-            tk.Label(zone_frame, text="Temp:").grid(row=0, column=0, sticky="w", pady=2)
-            temp_label = tk.Label(zone_frame, textvariable=self.tk_current_temps[zone_id], font=temp_font) # Use larger temp font
+            # --- Row 0: Temperature Display ---
+            tk.Label(zone_frame, text="Temp:", font=label_font).grid(row=0, column=0, sticky="w", pady=2)
+            temp_label = tk.Label(zone_frame, textvariable=self.tk_current_temps[zone_id], font=temp_font)
             temp_label.grid(row=0, column=1, columnspan=2, sticky="e", pady=2)
-            tk.Label(zone_frame, text="°C").grid(row=0, column=3, sticky="w", pady=2)
+            tk.Label(zone_frame, text="°C", font=label_font).grid(row=0, column=3, sticky="w", pady=2)
 
-            # Heater State
-            tk.Label(zone_frame, text="Heater:").grid(row=1, column=0, sticky="w", pady=2)
-            # **FIX:** Store the label widget for reliable color updates
+            # --- Row 1: Heater State ---
+            tk.Label(zone_frame, text="Heater:", font=label_font).grid(row=1, column=0, sticky="w", pady=2)
             state_label = tk.Label(zone_frame, textvariable=self.tk_heater_states[zone_id], font=control_font, fg="red")
             state_label.grid(row=1, column=1, columnspan=3, sticky="e", pady=2)
             self._heater_state_labels[zone_id] = state_label # Store the label
 
-            # Setpoint Control
-            tk.Label(zone_frame, text="Set (°C):").grid(row=2, column=0, sticky="w", pady=(10, 2))
-            # **FIX:** Increase Entry width significantly
-            entry = tk.Entry(zone_frame, textvariable=self.tk_target_setpoints[zone_id], width=10, font=control_font) # Increased width to 10
-            entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(10, 2)) # Use sticky="ew" to make it expand
-            # **FIX:** Increase Button font size and add padding
-            set_button = tk.Button(zone_frame, text="Set", font=control_font, padx=10, pady=3, # Added padding
-                                   command=lambda zid=zone_id: self.publish_setpoint(zid))
-            set_button.grid(row=2, column=3, sticky="ew", padx=(5,0), pady=(10, 2)) # Use sticky="ew"
+            # --- Row 2: Setpoint Input (Stacked Field) ---
+            tk.Label(zone_frame, text="Set (°C):", font=label_font).grid(row=2, column=0, sticky="w", pady=(10, 0)) # Padding top only
+            # **FIX:** Larger Entry, spans columns, added ipady for height
+            entry = tk.Entry(zone_frame, textvariable=self.tk_target_setpoints[zone_id], width=6, font=control_font, justify='center')
+            entry.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(2, 5), ipady=8) # Place on new row, add padding
 
-            # Configure column weights within the zone frame for better resizing
-            zone_frame.grid_columnconfigure(1, weight=1)
+            # --- Row 4: Setpoint Button (Stacked Button) ---
+            # **FIX:** Place button below entry, larger font, spans columns, added ipady for height
+            set_button = tk.Button(zone_frame, text="SET", font=control_font,
+                                   command=lambda zid=zone_id: self.publish_setpoint(zid))
+            set_button.grid(row=4, column=0, columnspan=4, sticky="ew", padx=0, pady=(0, 10), ipady=12) # Place on new row, add padding
+
+            # Configure column weights within the zone frame for better alignment
+            zone_frame.grid_columnconfigure(0, weight=0) # Label column fixed width
+            zone_frame.grid_columnconfigure(1, weight=1) # Temp/Entry/Button columns expand
             zone_frame.grid_columnconfigure(2, weight=1)
+            zone_frame.grid_columnconfigure(3, weight=0) # Unit label fixed width
 
 
         # Status Bar
@@ -114,19 +118,19 @@ class ExtruderGUI(tk.Frame):
             for i in range(1, ZONE_COUNT + 1):
                 zone_id = f"zone{i}"
                 # Update Temperature
-                temp = latest_temps[zone_id]
+                temp = latest_temps.get(zone_id, float('nan')) # Use .get for safety
                 if not isinstance(temp, float) or temp != temp: # Check for NaN
                      self.tk_current_temps[zone_id].set("--")
                 else:
                     self.tk_current_temps[zone_id].set(f"{temp:.1f}")
 
                 # Update Heater State
-                state = latest_heater_states[zone_id]
+                state = latest_heater_states.get(zone_id, False) # Use .get for safety
                 state_text = "ON" if state else "OFF"
                 color = "green" if state else "red"
                 self.tk_heater_states[zone_id].set(state_text)
 
-                # **FIX:** Update color using the stored label reference
+                # Update color using the stored label reference
                 if zone_id in self._heater_state_labels:
                     self._heater_state_labels[zone_id].config(fg=color)
 
