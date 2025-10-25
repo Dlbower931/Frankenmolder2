@@ -53,10 +53,10 @@ def read_temp_c():
 # --- ROS Publisher Function ---
 def temperature_publisher():
     # Initialize the ROS Node
-    rospy.init_node('max6675_node', anonymous=True)
+    rospy.init_node('extruder_zone1_temp_node')
     
     # Create the Publisher
-    pub = rospy.Publisher('/injection/nozzle_temp', Float32, queue_size=10)
+    pub = rospy.Publisher('/extruder/zone1/temperature', Float32, queue_size=10)
     
     # Set the publishing rate (4 Hz to match sensor's max update rate)
     rate = rospy.Rate(4) # 4 Hz 
