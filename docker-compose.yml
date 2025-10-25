@@ -19,11 +19,6 @@ services:
       - ROS_MASTER_URI=http://100.119.150.8:11311
       # ROS_IP can be set to the host IP as well
       - ROS_IP=100.119.150.8
-      
-      # FOXGLOVE_BRIDGE_ADDRESS can also be removed, but setting it to localhost 
-      # is often a safe bet in host mode, or you can just remove it.
-      - FOXGLOVE_BRIDGE_ADDRESS=127.0.0.1 
-      
     # REMOVE THE 'ports:' SECTION ENTIRELY 
     # The ports 11311 and 8080 are automatically exposed by 'network_mode: host'
     
