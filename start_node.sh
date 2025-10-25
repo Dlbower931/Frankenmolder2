@@ -20,9 +20,8 @@ rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 echo "Starting background rosbag recording..."
 LOG_DIR="/data/ros_logs" # Use the mounted volume path
 mkdir -p $LOG_DIR
-# Record all topics (-a), save to LOG_DIR, name with date+time prefix (-o)
-# REMOVED the '-G 3600' option
-rosbag record -a -o $LOG_DIR/frankenmolder_log &
+# Record all topics (-a), save to LOG_DIR, name with date+time prefix (-o), split every 1000 messages (-L 1000)
+rosbag record -a -o $LOG_DIR/frankenmolder_log -L 1000 &
 # ------------------------------------------------
 
 # Launch the Topic Watchdog (using the new package name)
