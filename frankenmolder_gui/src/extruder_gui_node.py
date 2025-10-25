@@ -161,7 +161,7 @@ class ExtruderGUI(tk.Frame):
             self.message_var.set(f"Error: Publisher for {zone_id} not ready.")
             rospy.logwarn(f"GUI: Setpoint Publisher for {zone_id} not initialized.")
 
-    # --- ROS Callback Methods (Run in ROS Thread) --- Working
+    # --- ROS Callback Methods (Run in ROS Thread) --- 
     def _update_temp_cb(self, temp_msg, zone_id):
         global latest_temps, data_lock
         with data_lock:
