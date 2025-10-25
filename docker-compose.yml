@@ -17,7 +17,9 @@ services:
       - ROS_IP=127.0.0.1 
       
     ports:
-      - "11311:11311"
+      - "11311:11311" # ROS Master
+      # --- CRITICAL FIX: Add Foxglove WebSocket port (8080) ---
+      - "8080:8080"
       
     devices:
       - /dev/spidev0.0:/dev/spidev0.0

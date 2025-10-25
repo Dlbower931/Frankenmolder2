@@ -15,6 +15,9 @@ sleep 5
 
 # Start your ROS Node in the background
 rosrun temperature_sensor_pkg temp_publisher_node.py &
+# --- CRITICAL FIX: Launch the Foxglove Bridge ---
+# The default launch file sets up the websocket server on port 8080
+roslaunch foxglove_bridge foxglove_bridge.launch & 
 
 echo "ROS services are running in the background."
 echo "Check status with: docker exec frankenmolder_ros rosnode list"
