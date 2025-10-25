@@ -7,51 +7,30 @@ services:
       context: .
       dockerfile: Dockerfile
     
-    # --- Networking: CRUCIAL for ROS/GUI on Host ---
-    # Use the host's network stack directly. Exposes all container ports (11311, 9090)
+    # --- Networking: Use the host's network stack ---
     network_mode: host 
     
-    # --- Permissions & Security: CRITICAL for SPI/GPIO and GUI ---
-    # Privileged access is often needed for low-level hardware (SPI/GPIO)
+    # --- Permissions & Security: Keep essential hardware access ---
     privileged: true 
-    # Allocate TTY and keep STDIN open for a stable terminal context (needed for GUI)
-    stdin_open: true  
-    tty: true         
-    # Run the container as the host user to match X-server permissions
-    user: "${UID}:${GID}" 
-    # Disable security sandboxing, required for X-server access in most Linux/Docker setups
-    security_opt:
-      - seccomp:unconfined 
-      
+    # Remove tty, stdin_open, security_opt, and user lines
+
     restart: always 
     
     # --- Environment Variables ---
     environment:
-      # Pass host user details for XAUTHORITY mounting
-      - USER=${USER}
-      - UID=${UID}
-      - GID=${GID}
-      
-      # X-Forwarding Variables (Crucial for displaying the GUI)
-      - DISPLAY=${DISPLAY} 
-      - XAUTHORITY=/home/${USER}/.Xauthority
-
-      # ROS Networking Variables (Use your PI_TAILSCALE_IP: 100.119.150.8)
+      # Keep these two set to your PI_TAILSCALE_IP
       - ROS_MASTER_URI=http://100.119.150.8:11311
       - ROS_IP=100.119.150.8
+      # Remove DISPLAY, XAUTHORITY, USER, UID, GID lines
       
-    # --- Hardware & Volume Mounts ---
+    # --- Volume Mounts: Keep only logs ---
     volumes:
-      # Mount the X11 Unix socket (allows GUI display)
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw 
-      # Mount the Xauthority file (REQUIRED for non-root user access)
-      - /home/${USER}/.Xauthority:/home/${USER}/.Xauthority:rw
-      # Persistent storage for rosbag logs
+      # Remove X11 and XAUTHORITY mounts
       - ./pi_ros_logs:/data/ros_logs 
       
     # SPI Device Access
     devices:
       - /dev/spidev0.0:/dev/spidev0.0
       
-    # The command runs your startup script, which handles roscore, nodes, and the GUI
+    # The command runs your startup script
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
