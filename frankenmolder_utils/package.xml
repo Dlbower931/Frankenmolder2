@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>frankenmolder_utils</name>
+  <version>0.0.0</version>
+  <description>Utility nodes for the Frankenmolder project, like topic monitoring.</description>
+
+  <maintainer email="user@todo.todo">Your Name</maintainer>
+  <license>TODO</license>
+
+  <!-- Build tool dependency -->
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- Runtime dependencies -->
+  <depend>rospy</depend>
+  <depend>std_msgs</depend> <!-- Needed because watchdog subscribes to Float32 -->
+
+  <!-- Python dependencies (handled by Dockerfile, but good practice to list) -->
+  <exec_depend>python3</exec_depend>
+
+  <export>
+    <build_type>catkin</build_type>
+  </export>
+</package>
