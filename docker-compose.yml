@@ -7,30 +7,29 @@ services:
       context: .
       dockerfile: Dockerfile
     
-    # --- Networking: Use the host's network stack ---
+    # --- Networking & Hardware Access ---
     network_mode: host 
-    
-    # --- Permissions & Security: Keep essential hardware access ---
     privileged: true 
-    # Remove tty, stdin_open, security_opt, and user lines
-
-    restart: always 
     
-    # --- Environment Variables ---
+    # --- X-FORWARDING SETUP (Your working method) ---
     environment:
-      # Keep these two set to your PI_TAILSCALE_IP
+      # Pass the host's display environment variable
+      - DISPLAY=${DISPLAY} 
+      
+      # ROS Networking Variables (Use your PI_TAILSCALE_IP: 100.119.150.8)
       - ROS_MASTER_URI=http://100.119.150.8:11311
       - ROS_IP=100.119.150.8
-      # Remove DISPLAY, XAUTHORITY, USER, UID, GID lines
       
-    # --- Volume Mounts: Keep only logs ---
     volumes:
-      # Remove X11 and XAUTHORITY mounts
+      # Mount the X11 Unix socket (Crucial for GUI)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw 
+      # Mount other necessary files (your logs)
       - ./pi_ros_logs:/data/ros_logs 
       
-    # SPI Device Access
     devices:
       - /dev/spidev0.0:/dev/spidev0.0
+      # (Optional, add /dev/vchiq if you need GPU acceleration)
+      - /dev/vchiq
       
-    # The command runs your startup script
+    restart: always 
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"

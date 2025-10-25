@@ -16,6 +16,9 @@ rosrun temperature_sensor_pkg extruder_zone1_temp_node.py &
 # Start Extruder Zone 2 Sensor
 rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 
+# --- START THE GUI NODE ---
+rosrun frankenmolder_gui extruder_gui_node.py &
+
 # Launch Foxglove Bridge (assuming you kept this from the previous steps)
 
 echo "ROS services are running in the background."

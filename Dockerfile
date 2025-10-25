@@ -8,10 +8,14 @@ WORKDIR /app
 # Install Python dependencies and tools
 # Note: You need python3-pip and python3-dev for spidev
 RUN apt-get update && apt-get install -y \
+    ros-noetic-rosbridge-server \
     python3-pip \
     python3-dev \
     git \
     build-essential \
+    # --- CRITICAL: Add Tkinter dependency ---
+    python3-tk \
+    tk-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the necessary Python library (e.g., spidev)
