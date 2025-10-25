@@ -42,7 +42,11 @@ class ExtruderGUI(tk.Frame):
     # --- GUI Update Methods ---
     def update_temp(self, temp_msg):
         """Called by the ROS subscriber to update the GUI variable."""
-        self.current_temp.set(f"{temp_msg.data:.2f}")
+        # Use try/except to catch any formatting errors
+        try:
+            self.current_temp.set(f"{temp_msg.data:.2f}")
+        except Exception as e:
+            rospy.logerr(f"GUI Update Error: {e}")
 
     def update_heater_state(self, state_msg):
         """Called by the ROS subscriber to update the GUI variable."""
