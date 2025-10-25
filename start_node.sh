@@ -13,9 +13,6 @@ sleep 5
 rosrun temperature_sensor_pkg extruder_zone1_temp_node.py &
 rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 
-# Start Control Nodes
-rosrun temperature_sensor_pkg extruder_zone1_control_node.py &
-
 # Start Background Logging
 echo "Starting background rosbag recording..."
 LOG_DIR="/data/ros_logs" # Use the mounted volume path
