@@ -1,0 +1,13 @@
+<launch>
+  <arg name="address" default="100.119.150.8" />
+  <arg name="port" default="8080" />
+  <arg name="tls" default="false" />
+  <arg name="no_delay" default="false" />
+
+  <node pkg="foxglove_bridge" type="foxglove_bridge" name="foxglove_bridge_node" output="screen">
+    <param name="address" value="$(arg address)" />
+    <param name="port" value="$(arg port)" />
+    <param name="tls" value="$(arg tls)" />
+    <param name="no_delay" value="$(arg no_delay)" />
+  </node>
+</launch>
