@@ -7,7 +7,7 @@ from threading import Thread, Lock
 import math # For isnan check
 
 # --- Configuration ---
-ZONE_COUNT = 1 # <-- FOCUS ON ZONE 1 FOR NOW
+ZONE_COUNT = 3 
 MIN_SETPOINT = 20.0
 MAX_SETPOINT = 350.0
 GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates
@@ -51,13 +51,17 @@ class ExtruderGUI(tk.Frame):
     def create_widgets(self):
         # --- Main Barrel Frame ---
         barrel_frame = tk.Frame(self.master, bd=2, relief=tk.SUNKEN)
-        barrel_frame.grid(row=0, column=0, columnspan=ZONE_COUNT * 2, padx=10, pady=10, sticky="ew") # Adjusted colspan
+        # Span across columns needed for 3 zones + potential spacing
+        barrel_frame.grid(row=0, column=0, columnspan=ZONE_COUNT * 2, padx=10, pady=10, sticky="ew")
 
         # --- Create Controls for Each Zone ---
         for i in range(ZONE_COUNT):
             zone_id = f"zone{i+1}"
             zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=10, pady=10)
-            zone_frame.grid(row=0, column=i, padx=5, pady=5, sticky="nsew") # Place zones side-by-side if ZONE_COUNT > 1
+            # Place zones side-by-side
+            zone_frame.grid(row=0, column=i, padx=5, pady=5, sticky="nsew")
+            # Configure column weight so zones expand equally if window is resized
+            barrel_frame.grid_columnconfigure(i, weight=1)
 
             # Temperature Display
             tk.Label(zone_frame, text="Temp:").grid(row=0, column=0, sticky="w")
@@ -79,22 +83,21 @@ class ExtruderGUI(tk.Frame):
                                    command=lambda zid=zone_id: self.publish_setpoint(zid))
             set_button.grid(row=5, column=0, columnspan=3, pady=5, ipady=8)
 
-            # State Control Buttons
+            # State Control Buttons (OFF and HEATING only)
             button_frame = tk.Frame(zone_frame)
             button_frame.grid(row=6, column=0, columnspan=3, pady=(15, 5))
             off_button = tk.Button(button_frame, text="OFF", bg="red", fg="white", font=("Arial", 12, "bold"), width=8,
                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "OFF"))
-            off_button.pack(side=tk.LEFT, padx=5)
+            off_button.pack(side=tk.LEFT, padx=10) # Increased padding
             heat_button = tk.Button(button_frame, text="HEATING", bg="orange", fg="black", font=("Arial", 12, "bold"), width=8,
                                     command=lambda zid=zone_id: self.publish_state_cmd(zid, "HEATING"))
-            heat_button.pack(side=tk.LEFT, padx=5)
-            pid_button = tk.Button(button_frame, text="PID", bg="green", fg="white", font=("Arial", 12, "bold"), width=8,
-                                   command=lambda zid=zone_id: self.publish_state_cmd(zid, "PID"))
-            pid_button.pack(side=tk.LEFT, padx=5)
+            heat_button.pack(side=tk.LEFT, padx=10) # Increased padding
+            # PID button REMOVED
 
         # --- Status Bar ---
         status_label = tk.Label(self.master, textvariable=self.message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
-        status_label.grid(row=1, column=0, columnspan=ZONE_COUNT * 2, sticky='ew', padx=10, pady=(0, 5)) # Adjusted colspan
+        # Span across columns needed for 3 zones
+        status_label.grid(row=1, column=0, columnspan=ZONE_COUNT * 2, sticky='ew', padx=10, pady=(0, 5))
 
     # --- GUI Update Methods ---
     def check_for_updates(self):
@@ -129,7 +132,7 @@ class ExtruderGUI(tk.Frame):
 
     # --- ROS Publishing Methods ---
     def publish_setpoint(self, zone_id):
-        """Validate and publish the setpoint for a specific zone."""
+        """Validate and publish the setpoint, automatically switching to PID mode."""
         if zone_id not in self.setpoint_pubs:
             rospy.logwarn(f"Setpoint Publisher for {zone_id} not initialized.")
             self.message_var.set(f"Error: Publisher for {zone_id} not ready.")
@@ -143,8 +146,10 @@ class ExtruderGUI(tk.Frame):
                 self.setpoint_pubs[zone_id].publish(msg)
                 rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value}")
                 self.message_var.set(f"{zone_id.capitalize()} setpoint updated to {setpoint_value:.1f}°C")
+                # --- IMPLICIT PID STATE CHANGE ---
                 # Automatically switch to PID mode when setpoint is validly set
                 self.publish_state_cmd(zone_id, "PID")
+                # ---------------------------------
             else:
                 rospy.logwarn(f"Setpoint {setpoint_value} for {zone_id} out of range ({MIN_SETPOINT}-{MAX_SETPOINT}).")
                 self.message_var.set(f"Error: {zone_id.capitalize()} setpoint out of range ({MIN_SETPOINT}-{MAX_SETPOINT}°C).")
@@ -162,10 +167,11 @@ class ExtruderGUI(tk.Frame):
             self.message_var.set(f"Error: State Publisher for {zone_id} not ready.")
             return
 
-        allowed_states = ["OFF", "HEATING", "PID"]
+        # PID is now an implicit state, only allow explicit OFF/HEATING
+        allowed_states = ["OFF", "HEATING", "PID"] # Keep PID here internally for setting via setpoint
         if state not in allowed_states:
-            rospy.logerr(f"Invalid state command '{state}' for {zone_id}.")
-            self.message_var.set(f"Error: Invalid state '{state}' for {zone_id}.")
+            rospy.logerr(f"Internal Error: Invalid state command '{state}' for {zone_id}.")
+            self.message_var.set(f"Internal Error: Invalid state '{state}' for {zone_id}.")
             return
 
         try:
@@ -173,17 +179,22 @@ class ExtruderGUI(tk.Frame):
             self.state_cmd_pubs[zone_id].publish(msg)
             rospy.loginfo(f"GUI published state command for {zone_id}: {state}")
             self.current_mode[zone_id].set(state) # Update GUI display immediately
-            self.message_var.set(f"{zone_id.capitalize()} mode set to {state}.")
+            # Only show user-friendly message for explicit button presses
+            if state in ["OFF", "HEATING"]:
+                self.message_var.set(f"{zone_id.capitalize()} mode set to {state}.")
+            elif state == "PID":
+                 # Message for PID is handled in publish_setpoint
+                 pass
         except Exception as e:
              rospy.logerr(f"Error publishing state command for {zone_id}: {e}")
              self.message_var.set(f"Error publishing state for {zone_id}.")
 
     # --- ROS Initialization/Loop (Worker Thread) ---
     def setup_ros_comms(self):
-        """Initializes ROS publishers and subscribers."""
+        """Initializes ROS publishers and subscribers for ALL zones."""
         rospy.loginfo("R_THREAD: Setting up ROS publishers and subscribers...")
         try:
-            for i in range(ZONE_COUNT):
+            for i in range(ZONE_COUNT): # Iterate through all 3 zones
                 zone_id = f"zone{i+1}"
 
                 # Publishers
@@ -193,7 +204,6 @@ class ExtruderGUI(tk.Frame):
                 # Subscribers
                 rospy.Subscriber(f'/extruder/{zone_id}/temperature', Float32,
                                  lambda msg, zid=zone_id: self.temp_callback(zid, msg))
-                # REMOVED SUBSCRIBER for /extruder/zoneX/heater_cmd
 
             rospy.loginfo("R_THREAD: ROS publishers and subscribers initialized successfully.")
             return True
@@ -208,11 +218,16 @@ class ExtruderGUI(tk.Frame):
         """Stores the latest temperature data safely."""
         try:
             with data_lock:
-                latest_temps[zone_id] = temp_msg.data
+                # Ensure the zone_id is valid before writing
+                if zone_id in latest_temps:
+                    latest_temps[zone_id] = temp_msg.data
+                else:
+                    rospy.logwarn(f"R_TEMP_CB: Received temp for unknown zone '{zone_id}'")
             # Optional: Log reception for debugging
             # rospy.loginfo(f"R_TEMP_CB ({zone_id}): Received temp {temp_msg.data:.1f}")
         except Exception as e:
             rospy.logerr(f"R_TEMP_CB ({zone_id}): Error storing temp data: {e}")
+
 # --- Main Execution ---
 def ros_thread_loop(app):
     """ROS initialization and spin loop run in a separate thread."""
