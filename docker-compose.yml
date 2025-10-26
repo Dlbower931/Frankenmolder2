@@ -19,8 +19,6 @@ services:
       # Hardcoded display for reliability after reboot
       - DISPLAY=:0
       # Pass host user details needed for Xauthority volume mount
-      - USER=${USER}
-
       # ROS Networking Variables (Use your PI_TAILSCALE_IP)
       - ROS_MASTER_URI=http://100.119.150.8:11311
       - ROS_IP=100.119.150.8
