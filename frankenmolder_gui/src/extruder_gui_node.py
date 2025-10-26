@@ -18,6 +18,7 @@ GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates
 latest_temps = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
 # latest_heater_states = {f"zone{i+1}": False for i in range(ZONE_COUNT)} # REMOVED - No longer subscribing
 # Lock to prevent race conditions when accessing shared data
+data_lock = Lock()
 class ExtruderGUI(tk.Frame):
     def __init__(self, master):
         super().__init__(master)
