@@ -36,4 +36,5 @@ services:
     stop_signal: SIGINT
 
     restart: always
-    command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
+    # --- FIX: Update path to start_node.sh ---
+    command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /home/rosuser/app/start_node.sh; sleep infinity"
