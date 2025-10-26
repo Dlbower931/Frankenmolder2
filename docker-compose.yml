@@ -32,10 +32,11 @@ services:
       - /dev/spidev0.1:/dev/spidev0.1
       # (Optional, add /dev/vchiq if you need GPU acceleration)
       - /dev/vchiq
+      # --- FIX: Explicitly map gpiomem for direct GPIO access ---
+      - /dev/gpiomem:/dev/gpiomem
 
     restart: always
     # --- Command: Use the /app path for root user ---
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
     # --- Add Signal Handling for Rosbag ---
     stop_signal: SIGINT
-
