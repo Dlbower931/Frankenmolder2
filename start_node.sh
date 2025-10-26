@@ -12,6 +12,7 @@ sleep 5
 # Start Sensor Nodes
 rosrun temperature_sensor_pkg extruder_zone1_temp_node.py &
 rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
+rosrun temperature_sensor_pkg extruder_zone1_control_node.py &
 # Add Zone 3 here when ready:
 # rosrun temperature_sensor_pkg extruder_zone3_temp_node.py &
 
