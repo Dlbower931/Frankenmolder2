@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install spidev
 
 # Create the source directory and copy local code
+# Note: Ownership will be handled by docker-compose's 'user' directive at runtime
 RUN mkdir -p /app/src/temperature_sensor_pkg /app/src/frankenmolder_gui /app/src/frankenmolder_utils /app/src/heater_control_pkg
 COPY temperature_sensor_pkg /app/src/temperature_sensor_pkg
 COPY frankenmolder_gui /app/src/frankenmolder_gui
@@ -38,11 +39,15 @@ RUN chmod +x /app/src/frankenmolder_utils/src/topic_watchdog.py
 COPY start_node.sh /app/start_node.sh
 RUN chmod +x /app/start_node.sh
 
-# --- FIX: Ensure .ros directory exists and root has ownership ---
-RUN mkdir -p /app/.ros && chown -R root:root /app
+# --- FIX: Ensure .ros directory exists with open permissions ---
+# Create the directory first
+RUN mkdir -p /app/.ros
+# Set wide-open permissions (777) - less secure but often needed for ROS in Docker
+RUN chmod -R 777 /app/.ros
 # -----------------------------------------------------------
 
 # --- Build the Catkin workspace (as root) ---
+# Note: Runtime execution will be as host user
 RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
     cd /app; \
     catkin_make_isolated"
@@ -53,5 +58,3 @@ RUN echo "source /app/devel_isolated/setup.bash" >> ~/.bashrc
 
 # Set final working directory
 WORKDIR /app
-
-# Command is specified in docker-compose.yml
