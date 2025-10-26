@@ -36,7 +36,7 @@ RUN chmod +x /app/start_node.sh
 RUN chmod +x /app/src/frankenmolder_gui/src/extruder_gui_node.py
 RUN chmod +x /app/src/temperature_sensor_pkg/src/extruder_zone1_temp_node.py
 RUN chmod +x /app/src/temperature_sensor_pkg/src/extruder_zone2_temp_node.py
-RUN chmod +x /app/src/heater_control_pkg/src/heater_control_pkg.py
+RUN chmod +x /app/src/heater_control_pkg/src/heater_control_node.py
 RUN chmod +x /app/src/frankenmolder_utils/src/topic_watchdog.py
 
 # Build the Catkin workspace (isolated build method)
