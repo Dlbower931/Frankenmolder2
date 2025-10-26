@@ -31,6 +31,9 @@ services:
       # (Optional, add /dev/vchiq if you need GPU acceleration)
       - /dev/vchiq
 
+    # --- Graceful Shutdown Signal ---
+    # Send SIGINT (Ctrl+C) instead of SIGTERM when stopping
+    stop_signal: SIGINT
+
     restart: always
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
-
