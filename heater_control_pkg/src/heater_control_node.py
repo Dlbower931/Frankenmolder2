@@ -28,6 +28,8 @@ try:
     # --- Configuration ---
     ZONE_COUNT = 3
     HYSTERESIS = 2.0 # Temperature band for PID state transition
+    PID_DROP_TIMEOUT = 5.0 # Seconds below band before reverting to HEATING
+
     # --- GPIO Pins commented out ---
     # HEATER_PINS = {
     #     "zone1": 17, # Example BCM pin number for Zone 1 heater
@@ -40,6 +42,9 @@ try:
     current_temps = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
     # commanded_states = {f"zone{i+1}": "OFF" for i in range(ZONE_COUNT)} # No longer primary input, just log received
     actual_states = {f"zone{i+1}": "OFF" for i in range(ZONE_COUNT)} # This node determines the actual state
+    # --- ADDED: Track when temp dropped below PID band ---
+    pid_below_band_start_time = {f"zone{i+1}": None for i in range(ZONE_COUNT)}
+
     # --- GPIO state tracking commented out ---
     # heater_pin_states = {f"zone{i+1}": False for i in range(ZONE_COUNT)} # Tracks physical output
 
@@ -81,6 +86,7 @@ try:
                          if value == "OFF" and actual_states.get(zone_id) != "OFF":
                              rospy.loginfo(f"HeaterControl({zone_id}): Forcing state to OFF due to external command.")
                              actual_states[zone_id] = "OFF"
+                             pid_below_band_start_time[zone_id] = None # Reset timer on OFF
                              # Publish the change back immediately
                              if zone_id in state_cmd_pubs:
                                  state_cmd_pubs[zone_id].publish(String(actual_states[zone_id]))
@@ -91,6 +97,7 @@ try:
                              if temp_ok and setpoint_ok:
                                  rospy.loginfo(f"HeaterControl({zone_id}): Accepting HEATING command, starting heat cycle.")
                                  actual_states[zone_id] = "HEATING"
+                                 pid_below_band_start_time[zone_id] = None # Reset timer
                                  if zone_id in state_cmd_pubs:
                                      state_cmd_pubs[zone_id].publish(String(actual_states[zone_id]))
                              else:
@@ -103,6 +110,9 @@ try:
                      elif data_type == Float32:
                          if zone_id in current_setpoints and data_dict == current_setpoints:
                              rospy.loginfo(f"HeaterControl({zone_id}): Received new setpoint: {value:.1f} C")
+                             # Reset the drop timer if setpoint changes while in PID mode
+                             if actual_states.get(zone_id) == "PID":
+                                 pid_below_band_start_time[zone_id] = None
                          # Update the dictionary (happens for temp too, but no specific log needed)
                          data_dict[zone_id] = value
 
@@ -114,7 +124,7 @@ try:
 
     def control_loop():
         """Runs the state machine logic for all zones."""
-        global actual_states
+        global actual_states, pid_below_band_start_time
 
         for i in range(ZONE_COUNT):
             zone_id = f"zone{i+1}"
@@ -133,16 +143,19 @@ try:
                 if current_actual != "OFF":
                     rospy.logwarn(f"HeaterControl({zone_id}): Sensor/Setpoint invalid. Forcing state to OFF.")
                     actual_states[zone_id] = "OFF"
+                    pid_below_band_start_time[zone_id] = None # Reset timer
                 heater_should_be_on = False
 
             elif current_actual == "OFF":
                 heater_should_be_on = False
+                pid_below_band_start_time[zone_id] = None # Ensure timer is reset when OFF
                 # Transition to HEATING ONLY happens in callback now based on command
 
             elif current_actual == "HEATING":
                 heater_should_be_on = True
                 lower_band = setpoint - HYSTERESIS
                 comparison_result = False
+                pid_below_band_start_time[zone_id] = None # Reset timer while heating up
                 rospy.loginfo_throttle(5, f"DEBUG({zone_id}): In HEATING state. Temp={temp:.1f}, Setpoint={setpoint:.1f}, LowerBand={lower_band:.1f}")
                 try:
                      if not math.isnan(temp):
@@ -162,17 +175,34 @@ try:
 
             elif current_actual == "PID":
                  # Check if commanded OFF (still allow external OFF command via callback)
-                 # Note: Callback handles forcing state to OFF if commanded
 
                 if not math.isnan(temp):
-                    # --- NEW RULE: Check if temp dropped BELOW the band ---
+                    # --- Check if temp dropped BELOW the band ---
                     lower_band = setpoint - HYSTERESIS
                     if temp < lower_band:
-                        rospy.logwarn(f"WARN({zone_id}): Temp {temp:.1f}C dropped below PID band ({lower_band:.1f}C). Transitioning PID -> HEATING")
-                        actual_states[zone_id] = "HEATING" # Go back to full heating
-                        heater_should_be_on = True # Ensure heater is on for HEATING state
-                    # --- End of New Rule ---
-                    else: # If still within or above band, perform normal PID logic
+                        # Temp is below band, start or check timer
+                        if pid_below_band_start_time[zone_id] is None:
+                            # Start the timer
+                            pid_below_band_start_time[zone_id] = rospy.Time.now()
+                            rospy.logwarn(f"WARN({zone_id}): Temp {temp:.1f}C dropped below PID band ({lower_band:.1f}C). Starting timer...")
+                            # Keep heater ON during initial drop to try and recover
+                            heater_should_be_on = True
+                        else:
+                            # Timer is running, check if timeout exceeded
+                            time_below_band = rospy.Time.now() - pid_below_band_start_time[zone_id]
+                            if time_below_band > rospy.Duration(PID_DROP_TIMEOUT):
+                                rospy.logerr(f"ERROR({zone_id}): Temp {temp:.1f}C stayed below PID band for {time_below_band.to_sec():.1f}s. Transitioning PID -> HEATING")
+                                actual_states[zone_id] = "HEATING" # Go back to full heating
+                                heater_should_be_on = True # Ensure heater is on for HEATING state
+                                pid_below_band_start_time[zone_id] = None # Reset timer
+                            else:
+                                # Still within timeout, keep trying PID logic (heater ON to recover)
+                                rospy.logwarn_throttle(2, f"WARN({zone_id}): Temp {temp:.1f}C still below PID band. Timer: {time_below_band.to_sec():.1f}s / {PID_DROP_TIMEOUT:.1f}s. Heater ON.")
+                                heater_should_be_on = True # Keep heater ON during recovery attempt
+                    # --- End of Drop Check ---
+                    else:
+                        # Temp is within or above band, reset timer and do normal PID
+                        pid_below_band_start_time[zone_id] = None # Reset timer
                         if temp < setpoint:
                             heater_should_be_on = True
                             rospy.loginfo_throttle(5, f"DEBUG({zone_id}): State=PID, Temp={temp:.1f} < Setpoint={setpoint:.1f}. Heater SHOULD BE ON")
@@ -180,28 +210,31 @@ try:
                             heater_should_be_on = False
                             rospy.loginfo_throttle(5, f"DEBUG({zone_id}): State=PID, Temp={temp:.1f} >= Setpoint={setpoint:.1f}. Heater SHOULD BE OFF")
                 else:
+                     # Temp is NaN
                      rospy.logwarn_throttle(5, f"WARN({zone_id}): State=PID, Temp is NaN. Forcing Heater SHOULD BE OFF.")
                      heater_should_be_on = False
+                     pid_below_band_start_time[zone_id] = None # Reset timer if sensor fails
+
                  # OFF transition handled in callback
 
             # Use rospy logging
             rospy.loginfo_throttle(5, f"LOGIC({zone_id}): State='{actual_states.get(zone_id, 'ERR')}': Heater SHOULD BE {'ON' if heater_should_be_on else 'OFF'}")
 
 
-            # --- CHANGE: Publish the determined state back to state_cmd topic if changed ---
+            # --- Publish the determined state back to state_cmd topic if changed ---
             current_state_for_pub = actual_states.get(zone_id, "OFF")
-            if previous_actual_state != current_state_for_pub:
-                rospy.loginfo(f"INFO({zone_id}): Actual state changed {previous_actual_state} -> {current_state_for_pub}. Publishing to state_cmd.")
-                if zone_id in state_cmd_pubs: # Use the new publisher dict
-                    state_cmd_pubs[zone_id].publish(String(current_state_for_pub))
-            # -----------------------------------------------------------------------------
+            # --- FIX: Always publish the current state for reliability ---
+            # if previous_actual_state != current_state_for_pub:
+            if zone_id in state_cmd_pubs: # Check publisher exists
+                # Log only if it changed
+                if previous_actual_state != current_state_for_pub:
+                    rospy.loginfo(f"INFO({zone_id}): Actual state changed {previous_actual_state} -> {current_state_for_pub}. Publishing to state_cmd.")
+                state_cmd_pubs[zone_id].publish(String(current_state_for_pub))
+            # -----------------------------------------------------------------
 
 
     def main_heater_control():
-        # print("DEBUG: Entering main_heater_control function...", flush=True)
-        # --- CHANGE: Use state_cmd_pubs ---
         global state_cmd_pubs
-        # -------------------------------
         try:
             rospy.init_node('heater_control_node', anonymous=True)
             rospy.loginfo("ROS node initialized.")
@@ -218,15 +251,14 @@ try:
         for i in range(ZONE_COUNT):
             zone_id = f"zone{i+1}"
             try:
-                # --- CHANGE: Publish state_cmd ---
+                # Publish state_cmd
                 state_cmd_pubs[zone_id] = rospy.Publisher(f'/extruder/{zone_id}/state_cmd', String, queue_size=10, latch=True)
-                # actual_state_pubs[zone_id] = rospy.Publisher(...) # Removed
-                # --------------------------------
 
-                # Subscribers (Setpoint, Temperature, and incoming State Command)
+                # Subscribers
                 rospy.Subscriber(f'/extruder/{zone_id}/setpoint', Float32, create_callback(zone_id, current_setpoints, Float32))
                 rospy.Subscriber(f'/extruder/{zone_id}/temperature', Float32, create_callback(zone_id, current_temps, Float32))
-                rospy.Subscriber(f'/extruder/{zone_id}/state_cmd', String, create_callback(zone_id, {}, String)) # Pass empty dict, callback handles logic now
+                # Subscribe to state_cmd but use empty dict, callback handles logic
+                rospy.Subscriber(f'/extruder/{zone_id}/state_cmd', String, create_callback(zone_id, {}, String))
 
                 # Publish initial state to state_cmd
                 state_cmd_pubs[zone_id].publish(String(actual_states.get(zone_id, "OFF")))
@@ -262,4 +294,3 @@ try:
 except Exception as top_level_e:
     print(f"FATAL: Uncaught exception at top level: {top_level_e}", file=sys.stderr, flush=True)
     sys.exit(1) # Ensure non-zero exit code on crash
-
