@@ -23,7 +23,8 @@ RUN pip3 install spidev
 
 # --- Add User and Group for GPIO/SPI Access ---
 ARG USER_ID=1000
-ARG GROUP_ID=1000 # Keep arg defined, but don't use GID for rosuser group
+ARG GROUP_ID=1000 
+# Keep arg defined, but dont use GID for rosuser group
 # --- FIX: Create gpio AND spi groups ---
 # --- FIX: Create rosuser group without specifying GID ---
     
