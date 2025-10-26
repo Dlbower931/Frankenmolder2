@@ -11,9 +11,9 @@ services:
     network_mode: host
     privileged: true
 
-    # --- X-FORWARDING SETUP (Updated) ---
+    # --- X-FORWARDING SETUP (Minimal working method) ---
     environment:
-      # Pass the host's display environment variable - HARDCODED
+      # Pass the host's display environment variable (Hardcoded for reliability after reboot)
       - DISPLAY=:0
 
       # ROS Networking Variables (Use your PI_TAILSCALE_IP: 100.119.150.8)
@@ -23,18 +23,19 @@ services:
     volumes:
       # Mount the X11 Unix socket (Crucial for GUI)
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Mount other necessary files (your logs)
+      # Mount log directory
       - ./pi_ros_logs:/data/ros_logs
 
     devices:
+      # Map both SPI devices
       - /dev/spidev0.0:/dev/spidev0.0
+      - /dev/spidev0.1:/dev/spidev0.1
       # (Optional, add /dev/vchiq if you need GPU acceleration)
       - /dev/vchiq
 
-    # --- Graceful Shutdown Signal ---
-    # Send SIGINT (Ctrl+C) instead of SIGTERM when stopping
+    restart: always
+    # --- Command: Use the /app path for root user ---
+    command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
+    # --- Add Signal Handling for Rosbag ---
     stop_signal: SIGINT
 
-    restart: always
-    # --- FIX: Update path to start_node.sh ---
-    command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /home/rosuser/app/start_node.sh; sleep infinity"

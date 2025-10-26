@@ -5,7 +5,7 @@ FROM ros:noetic-ros-core-focal
 ENV HOME /app
 WORKDIR /app
 
-# Install dependencies including GPIO and sudo
+# Install dependencies including GPIO and sudo (sudo might still be useful for debugging)
 RUN apt-get update && apt-get install -y \
     ros-noetic-rosbridge-server \
     python3-pip \
@@ -21,66 +21,41 @@ RUN apt-get update && apt-get install -y \
 # Install spidev via pip
 RUN pip3 install spidev
 
-# --- Add User and Group for GPIO/SPI Access ---
-ARG USER_ID=1000
-ARG GROUP_ID=1000 
-# Keep arg defined, but don't use GID for rosuser group
-# Create necessary groups (excluding dialout as it likely exists)
-# Add 'render' group
-RUN groupadd gpio \
- && groupadd spi \
- # && groupadd dialout \ # REMOVED THIS LINE
- && groupadd render \
- && groupadd rosuser \
- && useradd --uid $USER_ID --gid rosuser --create-home --shell /bin/bash rosuser \
- # Add user to relevant groups (usermod is safe even if group exists)
- && usermod -aG gpio rosuser \
- && usermod -aG spi rosuser \
- && usermod -aG dialout rosuser \
- && usermod -aG render rosuser \
- && usermod -aG sudo rosuser \
- && echo 'rosuser ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+# --- Copy Code as root ---
+# Create the source directory
+RUN mkdir -p /app/src/temperature_sensor_pkg \
+             /app/src/frankenmolder_gui \
+             /app/src/frankenmolder_utils \
+             /app/src/heater_control_pkg
 
-# Create log directory and set ownership BEFORE switching user
-RUN mkdir -p /data/ros_logs && chown -R ${USER_ID}:rosuser /data/ros_logs
+# Copy packages (owner will be root)
+COPY temperature_sensor_pkg /app/src/temperature_sensor_pkg
+COPY frankenmolder_gui /app/src/frankenmolder_gui
+COPY frankenmolder_utils /app/src/frankenmolder_utils
+COPY heater_control_pkg /app/src/heater_control_pkg
 
-# Switch to the non-root user for subsequent operations
-USER rosuser
-WORKDIR /home/rosuser/app
-ENV HOME /home/rosuser/app
-
-# --- Copy Code as the new user ---
-RUN mkdir -p /home/rosuser/app/src/temperature_sensor_pkg \
-             /home/rosuser/app/src/frankenmolder_gui \
-             /home/rosuser/app/src/frankenmolder_utils \
-             /home/rosuser/app/src/heater_control_pkg
-
-COPY --chown=rosuser:rosuser temperature_sensor_pkg /home/rosuser/app/src/temperature_sensor_pkg
-COPY --chown=rosuser:rosuser frankenmolder_gui /home/rosuser/app/src/frankenmolder_gui
-COPY --chown=rosuser:rosuser frankenmolder_utils /home/rosuser/app/src/frankenmolder_utils
-COPY --chown=rosuser:rosuser heater_control_pkg /home/rosuser/app/src/heater_control_pkg
-
-# --- Make Python nodes executable ---
-RUN chmod +x /home/rosuser/app/src/frankenmolder_gui/src/extruder_gui_node.py
-RUN chmod +x /home/rosuser/app/src/temperature_sensor_pkg/src/extruder_zone1_temp_node.py
-RUN chmod +x /home/rosuser/app/src/temperature_sensor_pkg/src/extruder_zone2_temp_node.py
-RUN chmod +x /home/rosuser/app/src/heater_control_pkg/src/heater_control_node.py
-RUN chmod +x /home/rosuser/app/src/frankenmolder_utils/src/topic_watchdog.py
+# --- Make Python nodes executable (using /app paths) ---
+RUN chmod +x /app/src/frankenmolder_gui/src/extruder_gui_node.py
+RUN chmod +x /app/src/temperature_sensor_pkg/src/extruder_zone1_temp_node.py
+RUN chmod +x /app/src/temperature_sensor_pkg/src/extruder_zone2_temp_node.py
+RUN chmod +x /app/src/heater_control_pkg/src/heater_control_node.py
+RUN chmod +x /app/src/frankenmolder_utils/src/topic_watchdog.py
 
 # --- Copy start script ---
-COPY --chown=rosuser:rosuser start_node.sh /home/rosuser/app/start_node.sh
-RUN chmod +x /home/rosuser/app/start_node.sh
+COPY start_node.sh /app/start_node.sh
+RUN chmod +x /app/start_node.sh
 
-# --- Build the Catkin workspace (as rosuser) ---
+# --- Build the Catkin workspace (as root) ---
 RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
-    cd /home/rosuser/app; \
+    cd /app; \
     catkin_make_isolated"
 
-# --- Update Environment for rosuser ---
-RUN echo "source /opt/ros/noetic/setup.bash" >> /home/rosuser/.bashrc
-RUN echo "source /home/rosuser/app/devel_isolated/setup.bash" >> /home/rosuser/.bashrc
+# --- Update Environment for root (Optional but good practice) ---
+RUN echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
+RUN echo "source /app/devel_isolated/setup.bash" >> ~/.bashrc
 
 # Set final working directory
-WORKDIR /home/rosuser/app
+WORKDIR /app
 
-# Command is still specified in docker-compose.yml, will run as rosuser
+# Command is still specified in docker-compose.yml, will run as root
+
