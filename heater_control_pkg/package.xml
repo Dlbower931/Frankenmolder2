@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>heater_control_pkg</name>
+  <version>0.0.0</version>
+  <description>Controls extruder heaters based on state and temperature using GPIO.</description>
+
+  <maintainer email="user@todo.todo">Your Name</maintainer>
+  <license>TODO</license>
+
+  <!-- Build tool dependency -->
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- ROS dependencies needed at runtime -->
+  <depend>rospy</depend>
+  <depend>std_msgs</depend> <!-- For Float32 and String messages -->
+
+  <!-- System dependencies needed at runtime -->
+  <!-- While installed via apt in Dockerfile, declaring it helps tools like rosdep -->
+  <exec_depend>python3-rpi.gpio</exec_depend>
+
+
+  <export>
+    <build_type>catkin</build_type>
+  </export>
+</package>
