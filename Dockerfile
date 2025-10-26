@@ -26,11 +26,12 @@ RUN pip3 install spidev
 # Create a non-root user 'rosuser' with ID 1000 (standard for first user like 'pi')
 # Adjust UID/GID if your host user ID is different (check with 'id -u' on Pi)
 ARG USER_ID=1000
-ARG GROUP_ID=1000
+ARG GROUP_ID=1000 # GID is defined but not explicitly used for rosuser groupadd
 # --- FIX: Create the gpio group first ---
+# --- FIX: Create rosuser group without specifying GID to avoid conflict ---
 RUN groupadd gpio \
- && groupadd --gid $GROUP_ID rosuser \
- && useradd --uid $USER_ID --gid $GROUP_ID --create-home --shell /bin/bash rosuser \
+ && groupadd rosuser \
+ && useradd --uid $USER_ID --gid rosuser --create-home --shell /bin/bash rosuser \
  # Add user to the gpio group (critical for hardware access)
  && usermod -aG gpio rosuser \
  && usermod -aG sudo rosuser \
