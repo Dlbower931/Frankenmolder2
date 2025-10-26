@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # --- VERY EARLY DEBUG PRINT ---
-# print("DEBUG: heater_control_node.py starting execution...")
+print("DEBUG: heater_control_node.py starting execution...")
 import sys # For stderr
 
 try:
@@ -11,9 +11,12 @@ try:
     import math
     # --- Temporarily comment out GPIO import ---
     # import RPi.GPIO as GPIO # Library for direct GPIO control
-    # print("DEBUG: heater_control_node.py imports successful.")
+    # --- VERY EARLY DEBUG PRINT ---
+    print("DEBUG: heater_control_node.py imports successful (GPIO skipped).")
 except Exception as import_e:
+    # --- VERY EARLY DEBUG PRINT ---
     print(f"FATAL: Import error: {import_e}", file=sys.stderr)
+    # Exit immediately if imports fail
     sys.exit(1)
 
 
@@ -194,10 +197,15 @@ def control_loop():
 
 
 def main_heater_control():
+    # --- ADDED PRINT ---
+    print("DEBUG: Entering main_heater_control function...")
     global actual_state_pubs
     try:
+        # --- ADDED PRINT ---
+        print("DEBUG: Attempting rospy.init_node...")
         rospy.init_node('heater_control_node', anonymous=True)
-        rospy.loginfo("ROS node initialized.")
+        # --- Use print here as rospy logging might not be ready yet ---
+        print("DEBUG: ROS node initialized.")
     except Exception as init_e:
         print(f"FATAL: Failed to initialize ROS node: {init_e}", file=sys.stderr)
         sys.exit(1)
@@ -208,7 +216,9 @@ def main_heater_control():
     # except Exception as gpio_e:
     #     rospy.logerr(f"HeaterControl: Failed to setup GPIO. Error: {gpio_e}")
 
-    rospy.loginfo("Setting up publishers and subscribers...")
+    # --- Use print here as well ---
+    print("DEBUG: Setting up publishers and subscribers...")
+    rospy.loginfo("Setting up publishers and subscribers...") # Keep rospy log too
     for i in range(ZONE_COUNT):
         zone_id = f"zone{i+1}"
         try:
@@ -218,26 +228,37 @@ def main_heater_control():
             rospy.Subscriber(f'/extruder/{zone_id}/state_cmd', String, create_callback(zone_id, commanded_states, String))
             actual_state_pubs[zone_id].publish(actual_states[zone_id]) # Publish initial state
         except Exception as pubsub_e:
+             # Use print for critical setup errors
+            print(f"ERROR: HeaterControl({zone_id}): Failed during Pub/Sub setup: {pubsub_e}", file=sys.stderr)
             rospy.logerr(f"HeaterControl({zone_id}): Failed during Pub/Sub setup: {pubsub_e}")
 
-    rospy.loginfo("Pub/Sub setup complete.")
+    # --- Use print ---
+    print("DEBUG: Pub/Sub setup complete.")
+    rospy.loginfo("Pub/Sub setup complete.") # Keep rospy log
+
     rate = rospy.Rate(1) # Control loop frequency (Hz)
-    rospy.loginfo("Heater Control Node Started (No GPIO). Entering main control loop...")
+    # --- Use print ---
+    print("DEBUG: Heater Control Node Started (No GPIO). Entering main control loop...")
+    rospy.loginfo("Heater Control Node Started (No GPIO). Entering main control loop...") # Keep rospy log
 
     while not rospy.is_shutdown():
         try:
             control_loop()
         except Exception as loop_e:
+            # Use print for loop errors
+             print(f"ERROR: HeaterControl: Error in control loop: {loop_e}", file=sys.stderr)
              rospy.logerr(f"HeaterControl: Error in control loop: {loop_e}")
         rate.sleep()
 
 if __name__ == '__main__':
+    # --- Use print in top-level handler ---
     try:
+        print("DEBUG: Script __main__ block executing...")
         main_heater_control()
     except rospy.ROSInterruptException:
-        print("Heater Control Node shutting down (ROSInterrupt).")
+        print("Heater Control Node shutting down (ROSInterrupt).") # Use print
     except Exception as main_e:
-        print(f"FATAL: Heater Control Node Crashed: {main_e}", file=sys.stderr)
+        print(f"FATAL: Heater Control Node Crashed: {main_e}", file=sys.stderr) # Use print
     finally:
         # --- GPIO Cleanup Call Commented Out ---
         pass
