@@ -56,6 +56,8 @@ def setup_gpio():
 def create_callback(zone_id, data_dict, data_type):
     """Factory function to create topic callbacks that update the correct zone's data."""
     def callback(msg):
+        # --- Need global actual_states to modify it directly ---
+        global actual_states
         valid = False
         value = None
         # Basic validation (optional)
@@ -82,14 +84,25 @@ def create_callback(zone_id, data_dict, data_type):
 
                  data_dict[zone_id] = value
 
-                 # If commanded OFF, force actual state OFF immediately
-                 if data_type == String and value == "OFF" and actual_states[zone_id] != "OFF":
-                     rospy.loginfo(f"HeaterControl({zone_id}): State forced to OFF by command.")
-                     actual_states[zone_id] = "OFF"
-                     # Update GPIO immediately on OFF command
-                     control_heater(zone_id, False)
-                     if zone_id in actual_state_pubs:
-                         actual_state_pubs[zone_id].publish(actual_states[zone_id])
+                 # --- CRITICAL UPDATE: Handle state commands immediately ---
+                 if data_type == String: # Only act on state commands here
+                     if value == "OFF" and actual_states[zone_id] != "OFF":
+                         rospy.loginfo(f"HeaterControl({zone_id}): State forced to OFF by command.")
+                         actual_states[zone_id] = "OFF"
+                         # Update GPIO immediately on OFF command
+                         control_heater(zone_id, False)
+                         if zone_id in actual_state_pubs:
+                             actual_state_pubs[zone_id].publish(actual_states[zone_id])
+                     # --- ADDED THIS BLOCK ---
+                     elif value == "HEATING" and actual_states[zone_id] == "OFF":
+                         rospy.loginfo(f"HeaterControl({zone_id}): State forced to HEATING by command.")
+                         actual_states[zone_id] = "HEATING"
+                         # Optionally turn on heater immediately, or let control loop handle it
+                         # control_heater(zone_id, True) # Turn on immediately
+                         if zone_id in actual_state_pubs:
+                             actual_state_pubs[zone_id].publish(actual_states[zone_id]) # Publish new state
+                     # ------------------------
+
     return callback
 
 
@@ -145,10 +158,7 @@ def control_loop():
         # --- State Machine ---
         elif current_actual == "OFF":
             heater_on = False
-            # Transition to HEATING if commanded and safe
-            if commanded == "HEATING" and not math.isnan(temp) and setpoint > 0:
-                actual_states[zone_id] = "HEATING"
-                rospy.loginfo(f"HeaterControl({zone_id}): Transitioning OFF -> HEATING")
+            # Transition to HEATING ONLY happens in callback now based on command
 
         elif current_actual == "HEATING":
             heater_on = True # Heater is ON during heat-up
@@ -160,27 +170,23 @@ def control_loop():
             rospy.loginfo_throttle(5, f"DEBUG({zone_id}): State=HEATING, Temp={temp:.1f}, Setpoint={setpoint:.1f}, LowerBand={lower_band:.1f}, Temp>=LowerBand? {comparison_result}")
             # --------------------------------
 
-            # Transition to OFF if commanded
-            if commanded == "OFF":
-                actual_states[zone_id] = "OFF"
-                rospy.loginfo(f"HeaterControl({zone_id}): Transitioning HEATING -> OFF")
+            # Transition to OFF is handled in callback now
             # Transition to PID when reaching the band
-            elif comparison_result: # Use the calculated result
+            if not math.isnan(temp) and comparison_result: # Ensure temp is valid before comparing
                 actual_states[zone_id] = "PID"
                 rospy.loginfo(f"HeaterControl({zone_id}): Temp {temp:.1f}C in band. Transitioning HEATING -> PID")
 
         elif current_actual == "PID":
-            # Transition to OFF if commanded
-            if commanded == "OFF":
-                actual_states[zone_id] = "OFF"
-                rospy.loginfo(f"HeaterControl({zone_id}): Transitioning PID -> OFF")
-            else:
-                # Simple ON/OFF PID logic based on setpoint
+            # Transition to OFF is handled in callback now
+            # Simple ON/OFF PID logic based on setpoint
+            if not math.isnan(temp): # Ensure temp is valid
                 if temp < setpoint:
                     heater_on = True
                 else:
                     heater_on = False
-                # Future: Implement actual PID calculation for PWM output here
+            else:
+                 heater_on = False # Safety off if sensor fails in PID mode
+            # Future: Implement actual PID calculation for PWM output here
 
         # --- Control GPIO ---
         # Make sure pin is defined before trying to control
@@ -273,4 +279,3 @@ if __name__ == '__main__':
              pass # GPIO object might not exist
         except Exception as cleanup_e:
              print(f"ERROR: Error during GPIO cleanup: {cleanup_e}", file=sys.stderr)
-
