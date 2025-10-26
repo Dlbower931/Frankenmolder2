@@ -18,7 +18,6 @@ GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates
 latest_temps = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
 # latest_heater_states = {f"zone{i+1}": False for i in range(ZONE_COUNT)} # REMOVED - No longer subscribing
 # Lock to prevent race conditions when accessing shared data
-data_lock = Lock()
 class ExtruderGUI(tk.Frame):
     def __init__(self, master):
         super().__init__(master)
@@ -124,6 +123,8 @@ class ExtruderGUI(tk.Frame):
                         self.current_temps[zone_id].set("--")
 
                     # Update Mode Label Color based on commanded state
+                    # NOTE: This reflects the COMMANDED state, not necessarily the ACTUAL state
+                    # The control node should publish the ACTUAL state if needed for display
                     mode = self.current_mode[zone_id].get()
                     mode_label = getattr(self, f"{zone_id}_mode_label", None)
                     if mode_label:
@@ -141,7 +142,7 @@ class ExtruderGUI(tk.Frame):
 
     # --- ROS Publishing Methods ---
     def publish_setpoint(self, zone_id):
-        """Validate and publish the setpoint, automatically switching to PID mode."""
+        """Validate and publish the setpoint. Does NOT change the state command."""
         if zone_id not in self.setpoint_pubs:
             rospy.logwarn(f"Setpoint Publisher for {zone_id} not initialized.")
             self.message_var.set(f"Error: Publisher for {zone_id} not ready.")
@@ -155,10 +156,9 @@ class ExtruderGUI(tk.Frame):
                 self.setpoint_pubs[zone_id].publish(msg)
                 rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value}")
                 self.message_var.set(f"{zone_id.capitalize()} setpoint updated to {setpoint_value:.1f}°C")
-                # --- IMPLICIT PID STATE CHANGE ---
-                # Automatically switch to PID mode when setpoint is validly set
-                self.publish_state_cmd(zone_id, "PID")
-                # ---------------------------------
+                # --- REMOVED AUTOMATIC PID STATE CHANGE ---
+                # self.publish_state_cmd(zone_id, "PID") # Control node handles this transition
+                # ----------------------------------------
             else:
                 rospy.logwarn(f"Setpoint {setpoint_value} for {zone_id} out of range ({MIN_SETPOINT}-{MAX_SETPOINT}).")
                 self.message_var.set(f"Error: {zone_id.capitalize()} setpoint out of range ({MIN_SETPOINT}-{MAX_SETPOINT}°C).")
@@ -176,26 +176,36 @@ class ExtruderGUI(tk.Frame):
             self.message_var.set(f"Error: State Publisher for {zone_id} not ready.")
             return
 
-        # PID is implicit, START button sends HEATING command
-        allowed_states = ["OFF", "HEATING", "PID"] # Internal states
-        if state not in allowed_states:
-            rospy.logerr(f"Internal Error: Invalid state command '{state}' for {zone_id}.")
-            self.message_var.set(f"Internal Error: Invalid state '{state}' for {zone_id}.")
-            return
+        # PID is now only set implicitly by the control node. GUI only sends OFF/HEATING.
+        allowed_states = ["OFF", "HEATING"] # GUI can only command these states directly
+        # Internal state tracking still uses "PID" if setpoint is published
+        internal_states = ["OFF", "HEATING", "PID"]
+
+        if state not in allowed_states and state != "PID": # Allow internal PID state tracking
+             rospy.logerr(f"Internal Error: Invalid explicit state command '{state}' for {zone_id}.")
+             self.message_var.set(f"Internal Error: Invalid explicit state '{state}' for {zone_id}.")
+             return
 
         try:
-            msg = String(data=state)
-            self.state_cmd_pubs[zone_id].publish(msg)
-            rospy.loginfo(f"GUI published state command for {zone_id}: {state}")
-            self.current_mode[zone_id].set(state) # Update GUI display immediately
-            # Only show user-friendly message for explicit button presses
+            # Publish the commanded state (OFF or HEATING)
+            if state in allowed_states:
+                msg = String(data=state)
+                self.state_cmd_pubs[zone_id].publish(msg)
+                rospy.loginfo(f"GUI published state command for {zone_id}: {state}")
+
+            # Update GUI display immediately based on button press or implicit PID
+            if state in internal_states:
+                self.current_mode[zone_id].set(state)
+
+            # Update user message based on the button pressed or implicit PID
             if state == "OFF":
-                self.message_var.set(f"{zone_id.capitalize()} mode set to OFF.")
+                self.message_var.set(f"{zone_id.capitalize()} mode commanded to OFF.")
             elif state == "HEATING":
                 # User pressed START, but internal state is HEATING
-                self.message_var.set(f"{zone_id.capitalize()} mode set to START (Heating).")
+                self.message_var.set(f"{zone_id.capitalize()} mode commanded to START (Heating).")
             elif state == "PID":
-                 # Message for PID is handled in publish_setpoint
+                 # This state is now set internally when setpoint is published
+                 # The user message is handled in publish_setpoint
                  pass
         except Exception as e:
              rospy.logerr(f"Error publishing state command for {zone_id}: {e}")
@@ -216,6 +226,7 @@ class ExtruderGUI(tk.Frame):
                 # Subscribers
                 rospy.Subscriber(f'/extruder/{zone_id}/temperature', Float32,
                                  lambda msg, zid=zone_id: self.temp_callback(zid, msg))
+                # REMOVED SUBSCRIBER for heater_cmd
 
             rospy.loginfo("R_THREAD: ROS publishers and subscribers initialized successfully.")
             return True
