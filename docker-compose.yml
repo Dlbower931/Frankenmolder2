@@ -1,42 +1,48 @@
-version: '3.7'
 
-services:
-  ros:
-    container_name: frankenmolder_ros
-    build:
-      context: .
-      dockerfile: Dockerfile
+   services:
+     ros:
+       container_name: frankenmolder_ros
+       build:
+         context: .
+         dockerfile: Dockerfile
 
-    # --- Networking & Hardware Access ---
-    network_mode: host
-    privileged: true
+       # --- Networking & Hardware Access ---
+       network_mode: host
+       privileged: true # Keep privileged for broad access
 
-    # --- X-FORWARDING SETUP (Minimal working method) ---
-    environment:
-      # Pass the host's display environment variable (Hardcoded for reliability after reboot)
-      - DISPLAY=:0
+       # --- FIX: Run container process as the host user ---
+       user: "${UID}:${GID}"
 
-      # ROS Networking Variables (Use your PI_TAILSCALE_IP: 100.119.150.8)
-      - ROS_MASTER_URI=http://100.119.150.8:11311
-      - ROS_IP=100.119.150.8
+       # --- X-FORWARDING SETUP ---
+       environment:
+         # Hardcoded display for reliability after reboot
+         - DISPLAY=:0
+         # Pass host user details for Xauthority (if needed later, safe to keep)
+         - USER=${USER}
 
-    volumes:
-      # Mount the X11 Unix socket (Crucial for GUI)
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Mount log directory
-      - ./pi_ros_logs:/data/ros_logs
+         # ROS Networking Variables
+         - ROS_MASTER_URI=http://100.119.150.8:11311
+         - ROS_IP=100.119.150.8
 
-    devices:
-      # Map both SPI devices
-      - /dev/spidev0.0:/dev/spidev0.0
-      - /dev/spidev0.1:/dev/spidev0.1
-      # (Optional, add /dev/vchiq if you need GPU acceleration)
-      - /dev/vchiq
-      # --- FIX: Explicitly map gpiomem for direct GPIO access ---
-      - /dev/gpiomem:/dev/gpiomem
+       volumes:
+         # Mount the X11 Unix socket
+         - /tmp/.X11-unix:/tmp/.X11-unix:rw
+         # Mount Xauthority using host user's home (essential when running as host user)
+         - /home/${USER}/.Xauthority:/home/${USER}/.Xauthority:rw
+         # Mount log directory
+         - ./pi_ros_logs:/data/ros_logs
 
-    restart: always
-    # --- Command: Use the /app path for root user ---
-    command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
-    # --- Add Signal Handling for Rosbag ---
-    stop_signal: SIGINT
+       devices:
+         # Map SPI devices
+         - /dev/spidev0.0:/dev/spidev0.0
+         - /dev/spidev0.1:/dev/spidev0.1
+         # Map gpiomem
+         - /dev/gpiomem:/dev/gpiomem
+         # Map vchiq (optional)
+         - /dev/vchiq
+
+       restart: always
+       # --- Command: Use the /app path (Dockerfile revert should handle this) ---
+       # Note: The WORKDIR and HOME in the reverted Dockerfile should be /app
+       command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
+       stop_signal: SIGINT
