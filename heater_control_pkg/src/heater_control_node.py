@@ -105,17 +105,20 @@ def control_heater(zone_id, turn_on):
 def control_loop():
     """Runs the state machine and GPIO control logic for all zones."""
     global actual_states
-    # --- ADDED DEBUG ---
-    rospy.loginfo("Control loop executing...")
+    # rospy.loginfo("Control loop executing...") # Make less frequent if needed
 
     for i in range(ZONE_COUNT):
         zone_id = f"zone{i+1}"
         previous_actual_state = actual_states[zone_id]
 
+        # --- ENHANCED DEBUG LOGGING AT START OF LOOP ITERATION ---
         temp = current_temps[zone_id]
         setpoint = current_setpoints[zone_id]
         commanded = commanded_states[zone_id]
         current_actual = actual_states[zone_id] # Use local copy for logic clarity
+        rospy.loginfo_throttle(5, f"LOOP_START({zone_id}): Temp={temp:.1f}, Setpoint={setpoint:.1f}, Commanded='{commanded}', Actual='{current_actual}'")
+        # ---------------------------------------------------------
+
 
         heater_on = False # Default to heater off
 
@@ -140,7 +143,8 @@ def control_loop():
             # --- DEBUG LOGGING ADDED HERE ---
             lower_band = setpoint - HYSTERESIS
             comparison_result = temp >= lower_band
-            rospy.loginfo(f"DEBUG({zone_id}): State=HEATING, Temp={temp:.1f}, Setpoint={setpoint:.1f}, LowerBand={lower_band:.1f}, Temp>=LowerBand? {comparison_result}")
+            # Throttle debug log to once every 5 seconds to reduce noise
+            rospy.loginfo_throttle(5, f"DEBUG({zone_id}): State=HEATING, Temp={temp:.1f}, Setpoint={setpoint:.1f}, LowerBand={lower_band:.1f}, Temp>=LowerBand? {comparison_result}")
             # --------------------------------
 
             # Transition to OFF if commanded
