@@ -92,9 +92,9 @@ class ExtruderGUI(tk.Frame):
             # Pack vertically, fill horizontal space, add vertical padding
             off_button.pack(side=tk.TOP, fill=tk.X, pady=2)
 
-            # Changed text to START and command to publish "START"
+            # Button text is "START", but command publishes "HEATING"
             start_button = tk.Button(button_frame, text="START", bg="orange", fg="black", font=("Arial", 12, "bold"),
-                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "START"))
+                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "HEATING")) # Publishes "HEATING"
             # Pack vertically below the OFF button
             start_button.pack(side=tk.TOP, fill=tk.X, pady=2)
             # PID button REMOVED
@@ -128,7 +128,7 @@ class ExtruderGUI(tk.Frame):
                     mode_label = getattr(self, f"{zone_id}_mode_label", None)
                     if mode_label:
                         if mode == "OFF": mode_label.config(fg="red")
-                        elif mode == "START": mode_label.config(fg="orange") # Changed from HEATING
+                        elif mode == "HEATING": mode_label.config(fg="orange") # Internal state is HEATING
                         elif mode == "PID": mode_label.config(fg="green")
                         else: mode_label.config(fg="black")
 
@@ -176,8 +176,8 @@ class ExtruderGUI(tk.Frame):
             self.message_var.set(f"Error: State Publisher for {zone_id} not ready.")
             return
 
-        # PID is implicit, START replaces HEATING
-        allowed_states = ["OFF", "START", "PID"] # Updated allowed states
+        # PID is implicit, START button sends HEATING command
+        allowed_states = ["OFF", "HEATING", "PID"] # Internal states
         if state not in allowed_states:
             rospy.logerr(f"Internal Error: Invalid state command '{state}' for {zone_id}.")
             self.message_var.set(f"Internal Error: Invalid state '{state}' for {zone_id}.")
@@ -189,8 +189,11 @@ class ExtruderGUI(tk.Frame):
             rospy.loginfo(f"GUI published state command for {zone_id}: {state}")
             self.current_mode[zone_id].set(state) # Update GUI display immediately
             # Only show user-friendly message for explicit button presses
-            if state in ["OFF", "START"]: # Changed from HEATING
-                self.message_var.set(f"{zone_id.capitalize()} mode set to {state}.")
+            if state == "OFF":
+                self.message_var.set(f"{zone_id.capitalize()} mode set to OFF.")
+            elif state == "HEATING":
+                # User pressed START, but internal state is HEATING
+                self.message_var.set(f"{zone_id.capitalize()} mode set to START (Heating).")
             elif state == "PID":
                  # Message for PID is handled in publish_setpoint
                  pass
