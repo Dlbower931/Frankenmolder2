@@ -7,7 +7,7 @@ import sys # For stderr
 try:
     import rospy
     from std_msgs.msg import Float32, String
-    import time
+    import time # Import time for sleep
     import math
     import RPi.GPIO as GPIO # Library for direct GPIO control
     # --- VERY EARLY DEBUG PRINT ---
@@ -215,11 +215,15 @@ def main_heater_control():
         sys.exit(1)
 
     try:
+        # --- ADDED DELAY ---
+        rospy.loginfo("Waiting 2 seconds before GPIO setup...")
+        time.sleep(2.0)
+        # -----------------
         setup_gpio()
     except Exception as gpio_e:
         rospy.logerr(f"HeaterControl: Failed to setup GPIO. Check permissions/wiring. Error: {gpio_e}")
         # Decide if GPIO failure is fatal
-        # sys.exit(1) # Uncomment to make GPIO failure fatal
+        sys.exit(1) # Exit if GPIO fails
 
     # --- Create Publishers and Subscribers for each zone ---
     # --- ADDED DEBUG ---
@@ -279,3 +283,4 @@ if __name__ == '__main__':
              pass # GPIO object might not exist
         except Exception as cleanup_e:
              print(f"ERROR: Error during GPIO cleanup: {cleanup_e}", file=sys.stderr)
+
