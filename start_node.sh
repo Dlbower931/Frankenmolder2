@@ -9,25 +9,24 @@ roscore &
 echo "Waiting 5 seconds for ROS Master..."
 sleep 5
 
-# --- FOCUSED DEBUGGING: Run ONLY the heater control node directly ---
+# --- FOCUSED DEBUGGING: Test ONLY the python3 interpreter ---
 # ... (Commented out nodes remain commented) ...
 
-# --- Run heater control node in foreground, redirecting output ---
-echo "Attempting to launch Heater Control Node directly with python3 IN FOREGROUND..."
+echo "Attempting to test python3 interpreter directly IN FOREGROUND..."
 LOG_DIR="/data/ros_logs"
 LOG_FILE="$LOG_DIR/heater_control.log"
 ERR_FILE="$LOG_DIR/heater_control.err"
-SCRIPT_PATH="/app/src/heater_control_pkg/src/heater_control_node.py"
+SCRIPT_PATH="/app/src/heater_control_pkg/src/heater_control_node.py" # Keep path for reference if needed later
 
 echo "Logging stdout to $LOG_FILE"
 echo "Logging stderr to $ERR_FILE"
 
-# --- ADDED DEBUG CHECKS ---
+# --- Pre-Execution Checks (Keep them for now) ---
 echo "--- Pre-Execution Checks ---"
 echo "Checking script path: $SCRIPT_PATH"
-ls -l "$SCRIPT_PATH" # Check if file exists and permissions
+ls -l "$SCRIPT_PATH"
 echo "Checking log directory: $LOG_DIR"
-ls -ld "$LOG_DIR" # Check directory existence and permissions
+ls -ld "$LOG_DIR"
 echo "Testing write access to log files..."
 echo "Test log write" > "$LOG_FILE"
 echo "Test error write" > "$ERR_FILE"
@@ -38,36 +37,32 @@ else
 fi
 echo "Current user: $(whoami)"
 echo "--------------------------"
-# --- END DEBUG CHECKS ---
 
-
-# Execute directly, capturing stdout and stderr
-# Overwrite test files with actual output
-python3 "$SCRIPT_PATH" > "$LOG_FILE" 2> "$ERR_FILE"
+# --- Execute minimal Python command ---
+echo "Executing: python3 -c \"print('Hello from Python', flush=True)\""
+python3 -c "print('Hello from Python', flush=True)" > "$LOG_FILE" 2> "$ERR_FILE"
 EXIT_CODE=$?
-echo "Heater Control Node execution finished. Exit code: $EXIT_CODE"
+echo "Python test execution finished. Exit code: $EXIT_CODE"
 echo "Check $LOG_FILE and $ERR_FILE for output/errors."
 # -----------------------------------------------------------------
 
 
 # --- Keep container alive ---
-echo "Script finished (or crashed). Keeping container alive..."
+echo "Script finished. Keeping container alive..."
 while true; do sleep 1000; done
-
 ```
 
 **After Updating the Canvas:**
 
 1.  Stop the container: `docker-compose down`.
-2.  Clear old log files again: `rm -f ~/apps/Frankenmolder2/pi_ros_logs/heater_control.*`.
+2.  Clear old log files: `rm -f ~/apps/Frankenmolder2/pi_ros_logs/heater_control.*`.
 3.  Restart the container: `docker-compose up -d`.
-4.  Check the main container logs *first* to see the output of the new debug checks:
+4.  Check the main container logs *first* for the pre-execution checks and the "Executing: python3..." message:
     ```bash
     docker logs -f frankenmolder_ros
     ```
-5.  Then, check the contents of the `heater_control.log` and `heater_control.err` files again on your Pi host:
+5.  Then, check the contents of `heater_control.log`:
     ```bash
     cat ~/apps/Frankenmolder2/pi_ros_logs/heater_control.log
-    cat ~/apps/Frankenmolder2/pi_ros_logs/heater_control.err
     
 
