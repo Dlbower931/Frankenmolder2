@@ -1,108 +1,146 @@
 #!/usr/bin/env python3
 
 import rospy
-from std_msgs.msg import Float32, String, Bool
+from std_msgs.msg import Float32, Bool, String # Import String
 import time
 
-class ExtruderZoneControl:
-    def __init__(self, zone_id):
-        self.zone_id = zone_id
-        self.node_name = f'extruder_{zone_id}_control_node'
-        rospy.init_node(self.node_name, anonymous=True)
-        rospy.loginfo(f"Starting {self.node_name}...")
+# --- Configuration ---
+HYSTERESIS = 2.0 # Temperature band (e.g., +/- 2.0 C around setpoint for PID)
 
-        # --- Parameters ---
-        self.hysteresis = rospy.get_param("~hysteresis", 2.0) # Degrees C band
-        self.update_rate = rospy.get_param("~update_rate", 1.0) # Hz
+# --- Global State Variables ---
+# These store the latest known values
+current_setpoint = 0.0
+current_temp = float('nan') # Initialize as NaN
+# State commanded by the GUI ("OFF", "HEATING") - PID is implicit
+commanded_state = "OFF"
+# Actual state managed by this node ("OFF", "HEATING", "PID")
+actual_state = "OFF"
+# Output state for the heater mechanism
+heater_output_state = False # True = ON, False = OFF
 
-        # --- State Variables ---
-        self.current_state_cmd = "OFF" # Desired state from GUI
-        self.current_setpoint = 0.0    # Desired temperature (for PID)
-        self.current_temperature = float('nan') # Actual temperature from sensor
-        self.heater_on = False         # Internal state for PID logic
+# --- Publishers ---
+# Publish the actual state for the GUI to display
+actual_state_pub = None
+# Publish the command for the physical heater mechanism
+heater_cmd_pub = None
 
-        # --- Publishers ---
-        # NOTE: We are NOT publishing /heater_cmd as per user request.
-        # If needed later, uncomment the following line:
-        # self.heater_cmd_pub = rospy.Publisher(f'/extruder/{zone_id}/heater_cmd', Bool, queue_size=10)
+# --- ROS Callbacks ---
+def setpoint_callback(msg):
+    """Subscribes to the setpoint published by the GUI."""
+    global current_setpoint
+    # Basic validation (optional, GUI should handle range)
+    if msg.data >= 0: # Ensure non-negative
+        current_setpoint = msg.data
+        rospy.loginfo(f"Control Node: Received new setpoint: {current_setpoint:.1f} C")
+    else:
+        rospy.logwarn(f"Control Node: Received invalid setpoint: {msg.data}")
 
-        # --- Subscribers ---
-        rospy.Subscriber(f'/extruder/{zone_id}/state_cmd', String, self.state_cmd_callback)
-        rospy.Subscriber(f'/extruder/{zone_id}/setpoint', Float32, self.setpoint_callback)
-        rospy.Subscriber(f'/extruder/{zone_id}/temperature', Float32, self.temperature_callback)
+def temp_callback(msg):
+    """Subscribes to the actual temperature published by the sensor node."""
+    global current_temp
+    current_temp = msg.data
+    # rospy.logdebug(f"Control Node: Received temp: {current_temp:.1f} C") # Too verbose for normal operation
 
-        # --- Control Loop Timer ---
-        self.control_timer = rospy.Timer(rospy.Duration(1.0 / self.update_rate), self.control_loop)
+def state_cmd_callback(msg):
+    """Subscribes to the state command published by the GUI ('OFF', 'HEATING')."""
+    global commanded_state, actual_state
+    new_cmd_state = msg.data
+    if new_cmd_state in ["OFF", "HEATING"]:
+        if commanded_state != new_cmd_state:
+            rospy.loginfo(f"Control Node: Received state command: {new_cmd_state}")
+            commanded_state = new_cmd_state
+            # If commanded OFF, immediately set actual state to OFF
+            if commanded_state == "OFF":
+                actual_state = "OFF"
+                rospy.loginfo("Control Node: State changed to OFF by command.")
+            # If commanded HEATING, start the heating process
+            elif commanded_state == "HEATING":
+                actual_state = "HEATING" # Start heating up
+                rospy.loginfo("Control Node: State changed to HEATING by command.")
+    else:
+        rospy.logwarn(f"Control Node: Received invalid state command: {new_cmd_state}")
 
-        rospy.loginfo(f"{self.node_name} initialized. Hysteresis: {self.hysteresis}, Rate: {self.update_rate} Hz")
+# --- Control Logic ---
+def control_loop():
+    global current_temp, current_setpoint, commanded_state, actual_state, heater_output_state
 
-    def state_cmd_callback(self, msg):
-        """Update the desired operating state."""
-        new_state = msg.data.upper() # Ensure consistent casing
-        if new_state in ["OFF", "HEATING", "PID"]:
-            if new_state != self.current_state_cmd:
-                rospy.loginfo(f"{self.zone_id.capitalize()}: State command changed to {new_state}")
-                self.current_state_cmd = new_state
-                # Reset heater state when changing modes for safety
-                self.heater_on = False
+    # Don't do anything if temp is invalid or setpoint not set
+    if math.isnan(current_temp) or current_setpoint <= 0:
+        actual_state = "OFF" # Safety: turn off if sensor fails or no setpoint
+        heater_output_state = False
+        return # Exit loop early
+
+    # --- State Machine Logic ---
+    if actual_state == "OFF":
+        heater_output_state = False
+        # Stay OFF unless commanded to HEAT
+        if commanded_state == "HEATING":
+             actual_state = "HEATING" # Transition to HEATING based on command
+             rospy.loginfo("Control Node: Transitioning OFF -> HEATING")
+
+    elif actual_state == "HEATING":
+        heater_output_state = True # Full power heating
+        # Check if commanded OFF
+        if commanded_state == "OFF":
+            actual_state = "OFF"
+            rospy.loginfo("Control Node: Transitioning HEATING -> OFF")
+        # Check if temp has reached the PID band lower threshold
+        elif current_temp >= (current_setpoint - HYSTERESIS):
+            actual_state = "PID" # Transition to PID control
+            rospy.loginfo(f"Control Node: Temp {current_temp:.1f}C reached PID band. Transitioning HEATING -> PID")
+
+    elif actual_state == "PID":
+        # Check if commanded OFF
+        if commanded_state == "OFF":
+            actual_state = "OFF"
+            rospy.loginfo("Control Node: Transitioning PID -> OFF")
         else:
-            rospy.logwarn(f"{self.zone_id.capitalize()}: Received invalid state command '{msg.data}'")
+            # Simple PID logic (On/Off within hysteresis band)
+            # Turn ON if below setpoint, OFF if at or above
+            if current_temp < current_setpoint:
+                heater_output_state = True
+            else:
+                heater_output_state = False
+            # Optional: More sophisticated PID calculation here
 
-    def setpoint_callback(self, msg):
-        """Update the target temperature for PID mode."""
-        # Add validation if needed (e.g., check against MIN/MAX_SETPOINT)
-        self.current_setpoint = msg.data
-        # rospy.loginfo(f"{self.zone_id.capitalize()}: Setpoint updated to {self.current_setpoint:.1f} C") # Can be noisy
+    # --- Publish Outputs ---
+    heater_cmd_pub.publish(heater_output_state)
+    actual_state_pub.publish(actual_state) # Let GUI know the true state
 
-    def temperature_callback(self, msg):
-        """Update the current measured temperature."""
-        self.current_temperature = msg.data
 
-    def control_loop(self, event):
-        """Main logic executed periodically."""
-        # Determine heater action based on the commanded state
-        if self.current_state_cmd == "OFF":
-            self.heater_on = False
-            # rospy.loginfo_throttle(10, f"{self.zone_id.capitalize()}: State is OFF.")
+def extruder_zone1_control():
+    global actual_state_pub, heater_cmd_pub
 
-        elif self.current_state_cmd == "HEATING":
-            # Simple "HEATING" mode: Heater is always ON (full power)
-            # Useful for initial heat-up. Be cautious with this mode.
-            self.heater_on = True
-            # rospy.loginfo_throttle(10, f"{self.zone_id.capitalize()}: State is HEATING (Heater ON).")
+    rospy.init_node('extruder_zone1_control_node', anonymous=True)
 
-        elif self.current_state_cmd == "PID":
-            # Simple ON/OFF control with hysteresis for "PID" mode
-            if math.isnan(self.current_temperature):
-                rospy.logwarn_throttle(5, f"{self.zone_id.capitalize()}: PID waiting for valid temperature reading.")
-                self.heater_on = False # Safety: Turn off if temp is invalid
-            elif self.current_temperature < (self.current_setpoint - self.hysteresis):
-                # Below target band, turn heater ON
-                if not self.heater_on:
-                    rospy.loginfo(f"{self.zone_id.capitalize()} PID: Temp ({self.current_temperature:.1f}) < Target ({self.current_setpoint:.1f} - {self.hysteresis:.1f}). Turning Heater ON.")
-                self.heater_on = True
-            elif self.current_temperature > self.current_setpoint:
-                # Above target, turn heater OFF
-                # (Stays off between setpoint-hysteresis and setpoint)
-                if self.heater_on:
-                     rospy.loginfo(f"{self.zone_id.capitalize()} PID: Temp ({self.current_temperature:.1f}) > Target ({self.current_setpoint:.1f}). Turning Heater OFF.")
-                self.heater_on = False
-            # else: # Within hysteresis band, maintain current state
-                # rospy.loginfo_throttle(10, f"{self.zone_id.capitalize()}: PID Temp within hysteresis band.")
-                # pass
+    # --- Publishers ---
+    # Publishes the ACTUAL state back to the GUI/other nodes
+    actual_state_pub = rospy.Publisher('/extruder/zone1/actual_state', String, queue_size=10, latch=True)
+    # Publishes the ON/OFF command to the heater mechanism/relay node
+    heater_cmd_pub = rospy.Publisher('/extruder/zone1/heater_cmd', Bool, queue_size=10, latch=True)
 
-        # --- Publish Heater Command (If needed) ---
-        # If your heater hardware needs a separate boolean command, uncomment this:
-        # if self.heater_cmd_pub:
-        #     self.heater_cmd_pub.publish(self.heater_on)
+    # --- Subscribers ---
+    rospy.Subscriber('/extruder/zone1/setpoint', Float32, setpoint_callback)
+    rospy.Subscriber('/extruder/zone1/temperature', Float32, temp_callback)
+    rospy.Subscriber('/extruder/zone1/state_cmd', String, state_cmd_callback)
+
+    rate = rospy.Rate(1) # Run the control loop once per second
+
+    rospy.loginfo("Extruder Zone 1 Control Node Started.")
+    # Initialize state publications
+    actual_state_pub.publish(actual_state)
+    heater_cmd_pub.publish(heater_output_state)
+
+
+    while not rospy.is_shutdown():
+        control_loop()
+        rate.sleep()
 
 if __name__ == '__main__':
-    import math # Needed for isnan
+    import math # Needed for isnan check
     try:
-        # --- IMPORTANT: Change 'zone1' if creating nodes for other zones ---
-        controller = ExtruderZoneControl('zone1')
-        rospy.spin()
+        extruder_zone1_control()
     except rospy.ROSInterruptException:
-        rospy.loginfo("Control node shutting down.")
+        pass
     except Exception as e:
-        rospy.logerr(f"Control node crashed: {e}")
+        rospy.logfatal(f"Control Node Crashed: {e}")
