@@ -1,6 +1,13 @@
 #!/bin/bash
 
-# Source the ROS environment
+# --- FIX: Explicitly set permissions for SPI devices ---
+echo "Attempting to set permissions for /dev/spidev*..."
+chmod 666 /dev/spidev0.0 || echo "WARN: Failed to chmod /dev/spidev0.0"
+chmod 666 /dev/spidev0.1 || echo "WARN: Failed to chmod /dev/spidev0.1"
+echo "SPI device permissions set (or attempted)."
+# ------------------------------------------------------
+
+# Source the ROS environment (Correct path for root user build)
 source /opt/ros/noetic/setup.bash
 source /app/devel_isolated/setup.bash
 
@@ -18,13 +25,11 @@ echo "Attempting to launch Sensor Node 2..."
 rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 echo "Sensor Node 2 launch command sent."
 
-# --- FIX: Launch Heater Control Node directly with python3 ---
+# Launch Heater Control Node directly with python3
 echo "Attempting to launch Heater Control Node directly with python3..."
-# Use the full path to the script
 python3 /app/src/heater_control_pkg/src/heater_control_node.py &
 EXIT_CODE=$?
 echo "Heater Control Node direct launch command sent. Exit code: $EXIT_CODE"
-# -----------------------------------------------------------
 
 # Launch the Topic Watchdog
 echo "Attempting to launch Topic Watchdog..."
@@ -41,7 +46,7 @@ echo "Starting continuous background rosbag recording (30 second segments)..."
 LOG_DIR="/data/ros_logs" # Use the mounted volume path
 mkdir -p $LOG_DIR
 
-# Loop indefinitely to restart rosbag record (running as root)
+# Loop indefinitely to restart rosbag record (running as root, no sudo needed)
 ( while true; do
     echo "Starting new 30s rosbag segment..."
     # Record without sudo

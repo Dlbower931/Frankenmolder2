@@ -1,3 +1,4 @@
+version: '3.7'
 
 services:
   ros:
@@ -8,40 +9,30 @@ services:
 
     # --- Networking & Hardware Access ---
     network_mode: host
-    privileged: true # Keep privileged for broad access
+    privileged: true # CRITICAL: MUST be true
 
-    # --- FIX: Run container process as the host user ---
-    # Inherits permissions (gpio, spi, dialout) from the host user (e.g., dlbower)
-    user: "${UID}:${GID}"
+    # --- Run as Root (as per current Dockerfile) ---
 
     # --- X-FORWARDING SETUP ---
     environment:
-      # Hardcoded display for reliability after reboot
       - DISPLAY=:0
-      # Pass host user details needed for Xauthority volume mount
-      # ROS Networking Variables (Use your PI_TAILSCALE_IP)
+      # ROS Networking Variables
       - ROS_MASTER_URI=http://100.119.150.8:11311
       - ROS_IP=100.119.150.8
 
     volumes:
-      # Mount the X11 Unix socket
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Mount Xauthority using host user's home (essential when running as host user)
-      - /home/${USER}/.Xauthority:/home/${USER}/.Xauthority:rw
-      # Mount log directory (ensure ./pi_ros_logs exists on host)
       - ./pi_ros_logs:/data/ros_logs
 
     devices:
       # Map SPI devices
       - /dev/spidev0.0:/dev/spidev0.0
       - /dev/spidev0.1:/dev/spidev0.1
-      # Map gpiomem (Essential for RPi.GPIO as non-root)
+      # Map gpiomem (Essential for RPi.GPIO)
       - /dev/gpiomem:/dev/gpiomem
       # Map vchiq (optional GPU)
       - /dev/vchiq
 
     restart: always
-    # Command uses /app path (Matches WORKDIR in the simplified Dockerfile)
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
-    # Send SIGINT for cleaner rosbag shutdown
     stop_signal: SIGINT
