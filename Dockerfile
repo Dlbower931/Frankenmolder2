@@ -25,15 +25,15 @@ RUN pip3 install spidev
 ARG USER_ID=1000
 ARG GROUP_ID=1000 
 # Keep arg defined, but don't use GID for rosuser group
-# Create necessary groups
+# Create necessary groups (excluding dialout as it likely exists)
 # Add 'render' group
 RUN groupadd gpio \
  && groupadd spi \
- && groupadd dialout \
+ # && groupadd dialout \ # REMOVED THIS LINE
  && groupadd render \
  && groupadd rosuser \
  && useradd --uid $USER_ID --gid rosuser --create-home --shell /bin/bash rosuser \
- # Add user to relevant groups
+ # Add user to relevant groups (usermod is safe even if group exists)
  && usermod -aG gpio rosuser \
  && usermod -aG spi rosuser \
  && usermod -aG dialout rosuser \
