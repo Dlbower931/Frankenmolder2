@@ -92,10 +92,11 @@ class ExtruderGUI(tk.Frame):
             # Pack vertically, fill horizontal space, add vertical padding
             off_button.pack(side=tk.TOP, fill=tk.X, pady=2)
 
-            heat_button = tk.Button(button_frame, text="HEATING", bg="orange", fg="black", font=("Arial", 12, "bold"),
-                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "HEATING"))
+            # Changed text to START and command to publish "START"
+            start_button = tk.Button(button_frame, text="START", bg="orange", fg="black", font=("Arial", 12, "bold"),
+                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "START"))
             # Pack vertically below the OFF button
-            heat_button.pack(side=tk.TOP, fill=tk.X, pady=2)
+            start_button.pack(side=tk.TOP, fill=tk.X, pady=2)
             # PID button REMOVED
 
             # Configure the button frame's column to expand if needed
@@ -127,7 +128,7 @@ class ExtruderGUI(tk.Frame):
                     mode_label = getattr(self, f"{zone_id}_mode_label", None)
                     if mode_label:
                         if mode == "OFF": mode_label.config(fg="red")
-                        elif mode == "HEATING": mode_label.config(fg="orange")
+                        elif mode == "START": mode_label.config(fg="orange") # Changed from HEATING
                         elif mode == "PID": mode_label.config(fg="green")
                         else: mode_label.config(fg="black")
 
@@ -175,8 +176,8 @@ class ExtruderGUI(tk.Frame):
             self.message_var.set(f"Error: State Publisher for {zone_id} not ready.")
             return
 
-        # PID is now an implicit state, only allow explicit OFF/HEATING
-        allowed_states = ["OFF", "HEATING", "PID"] # Keep PID here internally for setting via setpoint
+        # PID is implicit, START replaces HEATING
+        allowed_states = ["OFF", "START", "PID"] # Updated allowed states
         if state not in allowed_states:
             rospy.logerr(f"Internal Error: Invalid state command '{state}' for {zone_id}.")
             self.message_var.set(f"Internal Error: Invalid state '{state}' for {zone_id}.")
@@ -188,7 +189,7 @@ class ExtruderGUI(tk.Frame):
             rospy.loginfo(f"GUI published state command for {zone_id}: {state}")
             self.current_mode[zone_id].set(state) # Update GUI display immediately
             # Only show user-friendly message for explicit button presses
-            if state in ["OFF", "HEATING"]:
+            if state in ["OFF", "START"]: # Changed from HEATING
                 self.message_var.set(f"{zone_id.capitalize()} mode set to {state}.")
             elif state == "PID":
                  # Message for PID is handled in publish_setpoint
@@ -237,213 +238,6 @@ class ExtruderGUI(tk.Frame):
             rospy.logerr(f"R_TEMP_CB ({zone_id}): Error storing temp data: {e}")
 
 
-    def __init__(self, master):
-        super().__init__(master)
-        self.master = master
-        self.master.title("Frankenmolder Extruder Control")
-
-        # ROS Communication Objects (Initialized later)
-        self.setpoint_pubs = {} # Dict: { "zone1": Publisher, ... }
-        self.state_cmd_pubs = {} # Dict: { "zone1": Publisher, ... }
-
-        # --- Data Storage (Tkinter Variables) ---
-        self.current_temps = {} # Dict: { "zone1": tk.StringVar, ... }
-        self.target_setpoints = {} # Dict: { "zone1": tk.DoubleVar, ... }
-        self.current_mode = {} # Dict: { "zone1": tk.StringVar, ... } # Tracks commanded state
-
-        self.message_var = tk.StringVar(value="System Initialized.") # Status message
-
-        # Initialize Tkinter variables for each zone
-        for i in range(ZONE_COUNT):
-            zone_id = f"zone{i+1}"
-            self.current_temps[zone_id] = tk.StringVar(value="--")
-            self.target_setpoints[zone_id] = tk.DoubleVar(value=200.0) # Default target
-            self.current_mode[zone_id] = tk.StringVar(value="OFF") # Start in OFF state
-
-        self.create_widgets()
-
-        # Start the periodic GUI update check
-        self.master.after(GUI_POLL_INTERVAL_MS, self.check_for_updates)
-
-    def create_widgets(self):
-        # --- Main Barrel Frame ---
-        barrel_frame = tk.Frame(self.master, bd=2, relief=tk.SUNKEN)
-        # Span across columns needed for 3 zones + potential spacing
-        barrel_frame.grid(row=0, column=0, columnspan=ZONE_COUNT * 2, padx=10, pady=10, sticky="ew")
-
-        # --- Create Controls for Each Zone ---
-        for i in range(ZONE_COUNT):
-            zone_id = f"zone{i+1}"
-            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=10, pady=10)
-            # Place zones side-by-side
-            zone_frame.grid(row=0, column=i, padx=5, pady=5, sticky="nsew")
-            # Configure column weight so zones expand equally if window is resized
-            barrel_frame.grid_columnconfigure(i, weight=1)
-
-            # Temperature Display
-            tk.Label(zone_frame, text="Temp:").grid(row=0, column=0, sticky="w")
-            temp_label = tk.Label(zone_frame, textvariable=self.current_temps[zone_id], font=("Arial", 18, "bold"))
-            temp_label.grid(row=0, column=1, sticky="e")
-            tk.Label(zone_frame, text="°C").grid(row=0, column=2, sticky="w")
-
-            # Commanded Mode Display
-            tk.Label(zone_frame, text="Mode:").grid(row=1, column=0, sticky="w")
-            mode_label = tk.Label(zone_frame, textvariable=self.current_mode[zone_id], font=("Arial", 12, "italic"))
-            mode_label.grid(row=1, column=1, columnspan=2, sticky="e")
-            setattr(self, f"{zone_id}_mode_label", mode_label) # Store ref for color updates
-
-            # Setpoint Control (Stacked)
-            tk.Label(zone_frame, text="Setpoint (°C):", font=("Arial", 12)).grid(row=3, column=0, columnspan=3, pady=(10, 0), sticky="w")
-            entry = tk.Entry(zone_frame, textvariable=self.target_setpoints[zone_id], width=10, font=("Arial", 16))
-            entry.grid(row=4, column=0, columnspan=3, pady=5, ipady=8)
-            set_button = tk.Button(zone_frame, text="Set PID Target", font=("Arial", 14, "bold"), width=15,
-                                   command=lambda zid=zone_id: self.publish_setpoint(zid))
-            set_button.grid(row=5, column=0, columnspan=3, pady=5, ipady=8)
-
-            # State Control Buttons (OFF and HEATING only)
-            button_frame = tk.Frame(zone_frame)
-            button_frame.grid(row=6, column=0, columnspan=3, pady=(15, 5))
-            off_button = tk.Button(button_frame, text="OFF", bg="red", fg="white", font=("Arial", 12, "bold"), width=8,
-                                   command=lambda zid=zone_id: self.publish_state_cmd(zid, "OFF"))
-            off_button.pack(side=tk.LEFT, padx=10) # Increased padding
-            heat_button = tk.Button(button_frame, text="HEATING", bg="orange", fg="black", font=("Arial", 12, "bold"), width=8,
-                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "HEATING"))
-            heat_button.pack(side=tk.LEFT, padx=10) # Increased padding
-            # PID button REMOVED
-
-        # --- Status Bar ---
-        status_label = tk.Label(self.master, textvariable=self.message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
-        # Span across columns needed for 3 zones
-        status_label.grid(row=1, column=0, columnspan=ZONE_COUNT * 2, sticky='ew', padx=10, pady=(0, 5))
-
-    # --- GUI Update Methods ---
-    def check_for_updates(self):
-        """Periodically check shared data and update Tkinter variables."""
-        try:
-            with data_lock:
-                for i in range(ZONE_COUNT):
-                    zone_id = f"zone{i+1}"
-                    temp_val = latest_temps[zone_id]
-
-                    # Update Temperature Display
-                    if not math.isnan(temp_val):
-                        self.current_temps[zone_id].set(f"{temp_val:.1f}")
-                    else:
-                        self.current_temps[zone_id].set("--")
-
-                    # Update Mode Label Color based on commanded state
-                    mode = self.current_mode[zone_id].get()
-                    mode_label = getattr(self, f"{zone_id}_mode_label", None)
-                    if mode_label:
-                        if mode == "OFF": mode_label.config(fg="red")
-                        elif mode == "HEATING": mode_label.config(fg="orange")
-                        elif mode == "PID": mode_label.config(fg="green")
-                        else: mode_label.config(fg="black")
-
-        except Exception as e:
-            rospy.logerr(f"G_POLL: Error during GUI update: {e}")
-            self.message_var.set(f"Error during GUI update: {e}")
-
-        # Reschedule the next check
-        self.master.after(GUI_POLL_INTERVAL_MS, self.check_for_updates)
-
-    # --- ROS Publishing Methods ---
-    def publish_setpoint(self, zone_id):
-        """Validate and publish the setpoint, automatically switching to PID mode."""
-        if zone_id not in self.setpoint_pubs:
-            rospy.logwarn(f"Setpoint Publisher for {zone_id} not initialized.")
-            self.message_var.set(f"Error: Publisher for {zone_id} not ready.")
-            return
-
-        try:
-            setpoint_value = self.target_setpoints[zone_id].get()
-            # Validation
-            if MIN_SETPOINT <= setpoint_value <= MAX_SETPOINT:
-                msg = Float32(data=setpoint_value)
-                self.setpoint_pubs[zone_id].publish(msg)
-                rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value}")
-                self.message_var.set(f"{zone_id.capitalize()} setpoint updated to {setpoint_value:.1f}°C")
-                # --- IMPLICIT PID STATE CHANGE ---
-                # Automatically switch to PID mode when setpoint is validly set
-                self.publish_state_cmd(zone_id, "PID")
-                # ---------------------------------
-            else:
-                rospy.logwarn(f"Setpoint {setpoint_value} for {zone_id} out of range ({MIN_SETPOINT}-{MAX_SETPOINT}).")
-                self.message_var.set(f"Error: {zone_id.capitalize()} setpoint out of range ({MIN_SETPOINT}-{MAX_SETPOINT}°C).")
-        except tk.TclError:
-            rospy.logwarn(f"Invalid setpoint input for {zone_id}.")
-            self.message_var.set(f"Error: Invalid number entered for {zone_id.capitalize()} setpoint.")
-        except Exception as e:
-             rospy.logerr(f"Error publishing setpoint for {zone_id}: {e}")
-             self.message_var.set(f"Error publishing setpoint for {zone_id}.")
-
-    def publish_state_cmd(self, zone_id, state):
-        """Publish the desired state command for a specific zone."""
-        if zone_id not in self.state_cmd_pubs:
-            rospy.logwarn(f"State Command Publisher for {zone_id} not initialized.")
-            self.message_var.set(f"Error: State Publisher for {zone_id} not ready.")
-            return
-
-        # PID is now an implicit state, only allow explicit OFF/HEATING
-        allowed_states = ["OFF", "HEATING", "PID"] # Keep PID here internally for setting via setpoint
-        if state not in allowed_states:
-            rospy.logerr(f"Internal Error: Invalid state command '{state}' for {zone_id}.")
-            self.message_var.set(f"Internal Error: Invalid state '{state}' for {zone_id}.")
-            return
-
-        try:
-            msg = String(data=state)
-            self.state_cmd_pubs[zone_id].publish(msg)
-            rospy.loginfo(f"GUI published state command for {zone_id}: {state}")
-            self.current_mode[zone_id].set(state) # Update GUI display immediately
-            # Only show user-friendly message for explicit button presses
-            if state in ["OFF", "HEATING"]:
-                self.message_var.set(f"{zone_id.capitalize()} mode set to {state}.")
-            elif state == "PID":
-                 # Message for PID is handled in publish_setpoint
-                 pass
-        except Exception as e:
-             rospy.logerr(f"Error publishing state command for {zone_id}: {e}")
-             self.message_var.set(f"Error publishing state for {zone_id}.")
-
-    # --- ROS Initialization/Loop (Worker Thread) ---
-    def setup_ros_comms(self):
-        """Initializes ROS publishers and subscribers for ALL zones."""
-        rospy.loginfo("R_THREAD: Setting up ROS publishers and subscribers...")
-        try:
-            for i in range(ZONE_COUNT): # Iterate through all 3 zones
-                zone_id = f"zone{i+1}"
-
-                # Publishers
-                self.setpoint_pubs[zone_id] = rospy.Publisher(f'/extruder/{zone_id}/setpoint', Float32, queue_size=1)
-                self.state_cmd_pubs[zone_id] = rospy.Publisher(f'/extruder/{zone_id}/state_cmd', String, queue_size=1)
-
-                # Subscribers
-                rospy.Subscriber(f'/extruder/{zone_id}/temperature', Float32,
-                                 lambda msg, zid=zone_id: self.temp_callback(zid, msg))
-
-            rospy.loginfo("R_THREAD: ROS publishers and subscribers initialized successfully.")
-            return True
-
-        except Exception as e:
-            rospy.logerr(f"R_THREAD: Failed to initialize ROS comms: {e}")
-            self.message_var.set(f"FATAL: ROS Comms Init Error: {e}") # Update GUI on error
-            return False
-
-    # --- ROS Callbacks (Worker Thread) ---
-    def temp_callback(self, zone_id, temp_msg):
-        """Stores the latest temperature data safely."""
-        try:
-            with data_lock:
-                # Ensure the zone_id is valid before writing
-                if zone_id in latest_temps:
-                    latest_temps[zone_id] = temp_msg.data
-                else:
-                    rospy.logwarn(f"R_TEMP_CB: Received temp for unknown zone '{zone_id}'")
-            # Optional: Log reception for debugging
-            # rospy.loginfo(f"R_TEMP_CB ({zone_id}): Received temp {temp_msg.data:.1f}")
-        except Exception as e:
-            rospy.logerr(f"R_TEMP_CB ({zone_id}): Error storing temp data: {e}")
 
 # --- Main Execution ---
 def ros_thread_loop(app):
