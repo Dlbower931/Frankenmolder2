@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+!/usr/bin/env python3
 
 import rospy
 from std_msgs.msg import Float32, String
@@ -29,6 +29,8 @@ actual_state_pubs = {}
 
 # --- GPIO Setup ---
 def setup_gpio():
+    # --- ADDED DEBUG ---
+    rospy.loginfo("Attempting GPIO setup...")
     GPIO.setmode(GPIO.BCM) # Use Broadcom pin numbering
     GPIO.setwarnings(False)
     for zone_id, pin in HEATER_PINS.items():
@@ -103,6 +105,8 @@ def control_heater(zone_id, turn_on):
 def control_loop():
     """Runs the state machine and GPIO control logic for all zones."""
     global actual_states
+    # --- ADDED DEBUG ---
+    rospy.loginfo("Control loop executing...")
 
     for i in range(ZONE_COUNT):
         zone_id = f"zone{i+1}"
@@ -176,8 +180,12 @@ def control_loop():
                 actual_state_pubs[zone_id].publish(actual_states[zone_id])
 
 def main_heater_control():
+    # --- ADDED DEBUG ---
+    rospy.loginfo("Entering main_heater_control function...")
     global actual_state_pubs
     rospy.init_node('heater_control_node', anonymous=True)
+    # --- ADDED DEBUG ---
+    rospy.loginfo("ROS node initialized.")
     try:
         setup_gpio()
     except Exception as e:
@@ -186,6 +194,8 @@ def main_heater_control():
         # return # Exit if GPIO is critical
 
     # --- Create Publishers and Subscribers for each zone ---
+    # --- ADDED DEBUG ---
+    rospy.loginfo("Setting up publishers and subscribers...")
     for i in range(ZONE_COUNT):
         zone_id = f"zone{i+1}"
         # Publishers
@@ -197,9 +207,13 @@ def main_heater_control():
 
         # Initialize state publication
         actual_state_pubs[zone_id].publish(actual_states[zone_id])
+    # --- ADDED DEBUG ---
+    rospy.loginfo("Pub/Sub setup complete.")
 
     rate = rospy.Rate(1) # Control loop frequency (Hz)
     rospy.loginfo("Heater Control Node Started. Monitoring all zones.")
+    # --- ADDED DEBUG ---
+    rospy.loginfo("Entering main control loop...")
 
     while not rospy.is_shutdown():
         try:
