@@ -246,8 +246,15 @@ class ExtruderGUI(tk.Frame):
     def ros_spin_thread(self):
         """Runs rospy.spin() in a separate thread."""
         rospy.loginfo("GUI: ROS Spin thread started.")
+        # --- FIX: Call the correct method name ---
+        # if not app.setup_ros_comms(): # Incorrect Name
+        if not self.init_ros_comms(): # Correct Name
+            rospy.logerr("GUI: ROS Comms failed to initialize in spin thread. Exiting thread.")
+            return # Exit thread if comms fail
+        # ---------------------------------------
         rospy.spin()
         rospy.loginfo("GUI: ROS Spin thread finished.")
+
 
 
 
