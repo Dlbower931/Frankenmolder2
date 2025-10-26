@@ -21,7 +21,7 @@ try:
     HYSTERESIS = 2.0 # Temperature band for PID state transition
     PID_DROP_TIMEOUT = 5.0 # Seconds below band before reverting to HEATING
 
-    # --- Re-enable GPIO Pins dictionary ---
+
     HEATER_PINS = {
         "zone1": 17, # Example BCM pin number for Zone 1 heater
         "zone2": 27, # Example BCM pin number for Zone 2 heater
