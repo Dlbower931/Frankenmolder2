@@ -176,13 +176,14 @@ def control_loop():
             # OFF transition handled in callback
 
         # --- Control GPIO (Commented Out) ---
+        # --- FIX: Comment out the block checking HEATER_PINS ---
         # if HEATER_PINS.get(zone_id) is not None:
         #      control_heater(zone_id, heater_should_be_on)
         # elif heater_should_be_on:
         #      rospy.logwarn_throttle(10, f"HeaterControl({zone_id}): Trying to turn heater ON but no GPIO pin defined.")
         # --- Log the logical state instead ---
-        if HEATER_PINS.get(zone_id) is not None:
-            rospy.loginfo_throttle(5, f"LOGIC({zone_id}): Heater SHOULD BE {'ON' if heater_should_be_on else 'OFF'}")
+        # if HEATER_PINS.get(zone_id) is not None: # <-- Comment out this check
+        rospy.loginfo_throttle(5, f"LOGIC({zone_id}): Heater SHOULD BE {'ON' if heater_should_be_on else 'OFF'}")
 
 
         # --- Publish Actual State (if changed) ---
@@ -250,3 +251,4 @@ if __name__ == '__main__':
         #      pass
         # except Exception as cleanup_e:
         #      print(f"ERROR: Error during GPIO cleanup: {cleanup_e}", file=sys.stderr)
+
