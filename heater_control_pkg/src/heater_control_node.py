@@ -161,19 +161,24 @@ try:
                 # OFF transition handled in callback
 
             elif current_actual == "PID":
-                 # Check if commanded OFF (still allow external OFF command)
-                # Note: commanded_states is updated by the callback
-                # if commanded_states.get(zone_id) == "OFF": # Check the *received* command
-                #      actual_states[zone_id] = "OFF"
-                #      rospy.loginfo(f"HeaterControl({zone_id}): Transitioning PID -> OFF (commanded)")
-                # else: # If not commanded OFF, continue PID logic
+                 # Check if commanded OFF (still allow external OFF command via callback)
+                 # Note: Callback handles forcing state to OFF if commanded
+
                 if not math.isnan(temp):
-                    if temp < setpoint:
-                        heater_should_be_on = True
-                        rospy.loginfo_throttle(5, f"DEBUG({zone_id}): State=PID, Temp={temp:.1f} < Setpoint={setpoint:.1f}. Heater SHOULD BE ON")
-                    else:
-                        heater_should_be_on = False
-                        rospy.loginfo_throttle(5, f"DEBUG({zone_id}): State=PID, Temp={temp:.1f} >= Setpoint={setpoint:.1f}. Heater SHOULD BE OFF")
+                    # --- NEW RULE: Check if temp dropped BELOW the band ---
+                    lower_band = setpoint - HYSTERESIS
+                    if temp < lower_band:
+                        rospy.logwarn(f"WARN({zone_id}): Temp {temp:.1f}C dropped below PID band ({lower_band:.1f}C). Transitioning PID -> HEATING")
+                        actual_states[zone_id] = "HEATING" # Go back to full heating
+                        heater_should_be_on = True # Ensure heater is on for HEATING state
+                    # --- End of New Rule ---
+                    else: # If still within or above band, perform normal PID logic
+                        if temp < setpoint:
+                            heater_should_be_on = True
+                            rospy.loginfo_throttle(5, f"DEBUG({zone_id}): State=PID, Temp={temp:.1f} < Setpoint={setpoint:.1f}. Heater SHOULD BE ON")
+                        else:
+                            heater_should_be_on = False
+                            rospy.loginfo_throttle(5, f"DEBUG({zone_id}): State=PID, Temp={temp:.1f} >= Setpoint={setpoint:.1f}. Heater SHOULD BE OFF")
                 else:
                      rospy.logwarn_throttle(5, f"WARN({zone_id}): State=PID, Temp is NaN. Forcing Heater SHOULD BE OFF.")
                      heater_should_be_on = False
@@ -257,3 +262,4 @@ try:
 except Exception as top_level_e:
     print(f"FATAL: Uncaught exception at top level: {top_level_e}", file=sys.stderr, flush=True)
     sys.exit(1) # Ensure non-zero exit code on crash
+
