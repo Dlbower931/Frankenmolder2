@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# Source the ROS environment (using /app path for root)
+# Source the ROS environment
 source /opt/ros/noetic/setup.bash
-# --- FIX: Source the correct setup file path for root user ---
 source /app/devel_isolated/setup.bash
 
 # Start ROS Master
@@ -19,11 +18,13 @@ echo "Attempting to launch Sensor Node 2..."
 rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 echo "Sensor Node 2 launch command sent."
 
-# Attempting to launch Heater Control Node...
-echo "Attempting to launch Heater Control Node..."
-rosrun heater_control_pkg heater_control_node.py &
+# --- FIX: Launch Heater Control Node directly with python3 ---
+echo "Attempting to launch Heater Control Node directly with python3..."
+# Use the full path to the script
+python3 /app/src/heater_control_pkg/src/heater_control_node.py &
 EXIT_CODE=$?
-echo "Heater Control Node launch command sent. Exit code: $EXIT_CODE"
+echo "Heater Control Node direct launch command sent. Exit code: $EXIT_CODE"
+# -----------------------------------------------------------
 
 # Launch the Topic Watchdog
 echo "Attempting to launch Topic Watchdog..."
@@ -43,7 +44,7 @@ mkdir -p $LOG_DIR
 # Loop indefinitely to restart rosbag record (running as root)
 ( while true; do
     echo "Starting new 30s rosbag segment..."
-    # --- FIX: Record without sudo ---
+    # Record without sudo
     (cd $LOG_DIR && rosbag record -a -o frankenmolder_log --duration=30s)
 
     sleep 1
@@ -54,4 +55,3 @@ echo "ROS services and continuous logging are running in the background."
 
 # Keep the main container script alive
 while true; do sleep 1000; done
-
