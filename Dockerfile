@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     # --- CRITICAL: Add Tkinter dependency ---
     python3-tk \
     tk-dev \
-    python3-rpi.gpio
+    python3-rpi.gpio \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the necessary Python library (e.g., spidev)
