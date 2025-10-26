@@ -27,7 +27,9 @@ RUN pip3 install spidev
 # Adjust UID/GID if your host user ID is different (check with 'id -u' on Pi)
 ARG USER_ID=1000
 ARG GROUP_ID=1000
-RUN groupadd --gid $GROUP_ID rosuser \
+# --- FIX: Create the gpio group first ---
+RUN groupadd gpio \
+ && groupadd --gid $GROUP_ID rosuser \
  && useradd --uid $USER_ID --gid $GROUP_ID --create-home --shell /bin/bash rosuser \
  # Add user to the gpio group (critical for hardware access)
  && usermod -aG gpio rosuser \
