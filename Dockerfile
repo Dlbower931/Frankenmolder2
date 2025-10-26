@@ -38,6 +38,10 @@ RUN chmod +x /app/src/frankenmolder_utils/src/topic_watchdog.py
 COPY start_node.sh /app/start_node.sh
 RUN chmod +x /app/start_node.sh
 
+# --- FIX: Ensure .ros directory exists and root has ownership ---
+RUN mkdir -p /app/.ros && chown -R root:root /app
+# -----------------------------------------------------------
+
 # --- Build the Catkin workspace (as root) ---
 RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
     cd /app; \
@@ -50,3 +54,4 @@ RUN echo "source /app/devel_isolated/setup.bash" >> ~/.bashrc
 # Set final working directory
 WORKDIR /app
 
+# Command is specified in docker-compose.yml
