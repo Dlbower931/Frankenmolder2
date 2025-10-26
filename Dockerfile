@@ -24,21 +24,24 @@ RUN pip3 install spidev
 # --- Add User and Group for GPIO/SPI Access ---
 ARG USER_ID=1000
 ARG GROUP_ID=1000 
-# Keep arg defined, but dont use GID for rosuser group
-# --- FIX: Create gpio AND spi groups ---
-# --- FIX: Create rosuser group without specifying GID ---
-    
+# Keep arg defined, but don't use GID for rosuser group
+# Create necessary groups
+# Add 'render' group
 RUN groupadd gpio \
  && groupadd spi \
+ && groupadd dialout \
+ && groupadd render \
  && groupadd rosuser \
  && useradd --uid $USER_ID --gid rosuser --create-home --shell /bin/bash rosuser \
- # Add user to gpio and spi groups
+ # Add user to relevant groups
  && usermod -aG gpio rosuser \
  && usermod -aG spi rosuser \
+ && usermod -aG dialout rosuser \
+ && usermod -aG render rosuser \
  && usermod -aG sudo rosuser \
  && echo 'rosuser ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
-# --- FIX: Create log directory and set ownership BEFORE switching user ---
+# Create log directory and set ownership BEFORE switching user
 RUN mkdir -p /data/ros_logs && chown -R ${USER_ID}:rosuser /data/ros_logs
 
 # Switch to the non-root user for subsequent operations
@@ -81,4 +84,3 @@ RUN echo "source /home/rosuser/app/devel_isolated/setup.bash" >> /home/rosuser/.
 WORKDIR /home/rosuser/app
 
 # Command is still specified in docker-compose.yml, will run as rosuser
-
