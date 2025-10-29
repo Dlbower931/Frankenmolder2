@@ -13,25 +13,29 @@ import RPi.GPIO as GPIO
 # Software Chip Select Pin (Connected to MAX6675 CS)
 SOFTWARE_CS_PIN = 16 # GPIO 16 (Physical Pin 36)
 
-# Hardware SPI Configuration (We need to initialize spidev, but won't use its CS)
-# We can use either device 0 or 1, it doesn't matter since we control CS manually.
-# Let's use device 0 for consistency.
+# Hardware SPI Configuration
 SPI_BUS = 0
-SPI_DEVICE = 0 # Using CE0 hardware pin, but controlling manually via SOFTWARE_CS_PIN
+SPI_DEVICE = 0 # We must open a device, but we'll disable its CS line
 
 # --- Initialize SPI and GPIO ---
 try:
     # Initialize spidev library (controls SCK, MOSI, MISO)
-    spi = spidev.SpiDev(SPI_BUS, SPI_DEVICE)
+    spi = spidev.SpiDev() # Create object
+    spi.open(SPI_BUS, SPI_DEVICE) # Open the bus/device
     spi.max_speed_hz = 500000 # Set SPI speed
-    # spi.mode = 0 # Default mode usually works
+    
+    # --- CRITICAL FIX: Disable hardware chip select ---
+    # Tell spidev to NOT control the hardware CE0 pin.
+    # We will control the chip select manually via RPi.GPIO.
+    spi.no_cs = True 
+    # --------------------------------------------------
 
     # Initialize RPi.GPIO library (controls the software CS pin)
     GPIO.setmode(GPIO.BCM) # Use BCM pin numbering
     GPIO.setwarnings(False)
     GPIO.setup(SOFTWARE_CS_PIN, GPIO.OUT, initial=GPIO.HIGH) # Set pin as output, HIGH (inactive) initially
 
-    rospy.loginfo(f"Zone 3: Hardware SPI({SPI_BUS},{SPI_DEVICE}) and Software CS (GPIO {SOFTWARE_CS_PIN}) initialized.")
+    rospy.loginfo(f"Zone 3: Hardware SPI({SPI_BUS},{SPI_DEVICE} with no_cs=True) and Software CS (GPIO {SOFTWARE_CS_PIN}) initialized.")
 
 except Exception as e:
     # Log fatal error if SPI or GPIO fails
