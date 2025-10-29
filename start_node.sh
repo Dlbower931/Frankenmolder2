@@ -8,8 +8,8 @@ chmod 666 /dev/spidev0.2 || echo "WARN: Failed to chmod /dev/spidev0.2"
 echo "SPI device permissions set (or attempted)."
 
 # --- Set permissions for Pico USB port ---
-echo "Attempting to set permissions for /dev/ttyACM0..."
-chmod 666 /dev/ttyACM0 || echo "WARN: Failed to chmod /dev/ttyACM0"
+echo "Attempting to set permissions for /dev/ttyACM1..."
+chmod 666 /dev/ttyACM1 || echo "WARN: Failed to chmod /dev/ttyACM1"
 echo "Pico USB port permissions set (or attempted)."
 # ------------------------------------------------------
 
