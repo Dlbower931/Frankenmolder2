@@ -195,7 +195,8 @@ class DashboardFrame(tk.Frame):
 class HeaterControlFrame(tk.Frame):
     """The frame containing the 3-Zone Heater controls."""
     def __init__(self, parent, main_app, **kwargs):
-        super().__init__(parent, **kwargs)
+        # Parent is now the Canvas, which is fine
+        super().__init__(parent, **kwargs) 
         self.main_app = main_app # Reference to main app to access publishers
 
         # --- Tkinter Variables (Local to this frame) ---
@@ -205,7 +206,9 @@ class HeaterControlFrame(tk.Frame):
         self.mode_labels = {} # Store refs to labels for coloring
 
         # --- Main Barrel Frame ---
+        # This frame is now *inside* the canvas
         barrel_frame = tk.Frame(self, bd=2, relief=tk.SUNKEN)
+        # Use pack() instead of grid() since this frame is inside the canvas window
         barrel_frame.pack(padx=10, pady=10, fill=tk.X, expand=True)
 
         # --- Create Controls for Each Zone ---
@@ -308,9 +311,14 @@ class HeaterControlFrame(tk.Frame):
             return
 
         try:
-            msg = String(state_command)
+            # We want the button to say "START" but send "HEATING"
+            internal_command = state_command
+            if state_command == "START": # This check is redundant now but harmless
+                internal_command = "HEATING"
+
+            msg = String(internal_command)
             pub.publish(msg)
-            rospy.loginfo(f"GUI published state_cmd for {zone_id}: {state_command}")
+            rospy.loginfo(f"GUI published state_cmd for {zone_id}: {internal_command}")
             # GUI now updates its mode based on the subscription echo, not locally.
             self.main_app.message_var.set(f"{zone_id}: {state_command} command sent.")
 
@@ -326,15 +334,15 @@ class MotorControlFrame(tk.Frame):
 
         # --- Tkinter Variables ---
         self.target_rpm = tk.DoubleVar(value=10.0)
-        self.motor_state_cmd = tk.StringVar(value="STOPPED")
+        self.actual_motor_state = tk.StringVar(value="OFF") # Default to OFF
 
         # --- Layout ---
         control_frame = tk.LabelFrame(self, text="Motor Control", padx=20, pady=20, font=("Arial", 14, "bold"))
         control_frame.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
 
         # State Display
-        tk.Label(control_frame, text="Motor State:", font=("Arial", 14)).grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        self.state_label = tk.Label(control_frame, textvariable=self.motor_state_cmd, font=("Arial", 18, "bold"), fg="red")
+        tk.Label(control_frame, text="Actual State:", font=("Arial", 14)).grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        self.state_label = tk.Label(control_frame, textvariable=self.actual_motor_state, font=("Arial", 18, "bold"), fg="red")
         self.state_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
         
         # RPM Control
@@ -350,28 +358,30 @@ class MotorControlFrame(tk.Frame):
         button_frame.grid(row=2, column=0, columnspan=3, pady=20)
         
         start_button = tk.Button(button_frame, text="START MOTOR", bg="green", fg="white", font=("Arial", 14, "bold"), height=2, width=15,
-                                 command=lambda: self.publish_motor_cmd("START"))
+                                 # Publish "ON" when "START MOTOR" is clicked
+                                 command=lambda: self.publish_motor_cmd("ON"))
         start_button.pack(side=tk.LEFT, padx=10)
 
         stop_button = tk.Button(button_frame, text="STOP MOTOR", bg="red", fg="white", font=("Arial", 14, "bold"), height=2, width=15,
-                                command=lambda: self.publish_motor_cmd("STOP"))
+                                # Publish "OFF" when "STOP MOTOR" is clicked
+                                command=lambda: self.publish_motor_cmd("OFF"))
         stop_button.pack(side=tk.LEFT, padx=10)
 
     def update_gui_widgets(self):
         """Update all widgets in this frame with data from shared state."""
         with data_lock:
-            state = latest_motor_state
-            self.motor_state_cmd.set(state)
+            state = latest_motor_state # This now comes from /extruder/motor/state_cmd
+            self.actual_motor_state.set(state)
             
             # Update color based on state
-            if state == "RUNNING":
+            if state == "ON":
                 self.state_label.config(fg="green")
-            elif state == "STOPPED":
+            elif state == "OFF":
                 self.state_label.config(fg="red")
-            elif state == "FAULT":
+            elif state == "FAULT": # Add other states as needed
                 self.state_label.config(fg="orange")
             else:
-                self.state_label.config(fg="black")
+                self.state_label.config(fg="black") # Default for states like "STARTING", etc.
 
     def publish_set_rpm(self):
         """Validate and publish the target RPM."""
@@ -396,17 +406,20 @@ class MotorControlFrame(tk.Frame):
             self.main_app.message_var.set(f"Error (Motor): {e}")
 
     def publish_motor_cmd(self, command):
-        """Publish the motor command ('START', 'STOP')."""
+        """Publish the motor command ('ON', 'OFF')."""
         pub = self.main_app.publishers.get("motor_state_cmd")
         if not pub:
             rospy.logerr("Motor State Command Publisher not found.")
             return
 
         try:
+            # The 'command' argument is now "ON" or "OFF"
             msg = String(command)
             pub.publish(msg)
             rospy.loginfo(f"GUI published motor_state_cmd: {command}")
-            self.main_app.message_var.set(f"Motor {command} command sent.")
+            # Use the button text for the user message
+            user_action = "START" if command == "ON" else "STOP"
+            self.main_app.message_var.set(f"Motor {user_action} command sent.")
         except Exception as e:
             rospy.logerr(f"GUI publish_motor_cmd Error: {e}")
 def ros_spin_thread(app):
