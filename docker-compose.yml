@@ -32,11 +32,6 @@ services:
       - /dev/gpiomem:/dev/gpiomem
       # Map vchiq (optional GPU)
       - /dev/vchiq
-      # Map USB serial devices for Pi Pico 2W communication
-      - /dev/ttyUSB0:/dev/ttyUSB0
-      - /dev/ttyUSB1:/dev/ttyUSB1
-      - /dev/ttyACM0:/dev/ttyACM0
-      - /dev/ttyACM1:/dev/ttyACM1
 
     restart: always
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"

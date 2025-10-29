@@ -32,10 +32,6 @@ echo "Attempting to launch GUI Node..."
 rosrun frankenmolder_gui extruder_gui_node.py &
 echo "GUI Node launch command sent."
 
-echo "Attempting to launch Pi Pico Communication Node..."
-rosrun pico_comm_pkg pico_serial_node.py &
-echo "Pi Pico Communication Node launch command sent."
-
 # --- Restore Continuous Background Logging Loop ---
 echo "Starting continuous background rosbag recording (30 second segments)..."
 LOG_DIR="/data/ros_logs" # Use the mounted volume path
