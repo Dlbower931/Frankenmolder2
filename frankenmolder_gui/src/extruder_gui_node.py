@@ -115,8 +115,8 @@ class ExtruderGUI(tk.Frame):
             self.publishers["motor_set_rpm"] = rospy.Publisher('/extruder/motor/set_rpm', Float32, queue_size=1)
             self.publishers["motor_state_cmd"] = rospy.Publisher('/extruder/motor/state_cmd', String, queue_size=1)
 
-            self.subscribers["motor_actual_state"] = rospy.Subscriber(
-                '/extruder/motor/actual_state', # Listen for state from PICO
+            self.subscribers["motor_state_cmd"] = rospy.Subscriber(
+                '/extruder/motor/state_cmd', # Listen for state from PICO
                 String,
                 self.update_motor_state_callback
             )
@@ -323,15 +323,15 @@ class MotorControlFrame(tk.Frame):
 
         # --- Tkinter Variables ---
         self.target_rpm = tk.DoubleVar(value=10.0)
-        self.actual_motor_state = tk.StringVar(value="STOPPED")
+        self.motor_state_cmd = tk.StringVar(value="STOPPED")
 
         # --- Layout ---
         control_frame = tk.LabelFrame(self, text="Motor Control", padx=20, pady=20, font=("Arial", 14, "bold"))
         control_frame.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
 
         # State Display
-        tk.Label(control_frame, text="Actual State:", font=("Arial", 14)).grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        self.state_label = tk.Label(control_frame, textvariable=self.actual_motor_state, font=("Arial", 18, "bold"), fg="red")
+        tk.Label(control_frame, text="Motor State:", font=("Arial", 14)).grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        self.state_label = tk.Label(control_frame, textvariable=self.motor_state_cmd, font=("Arial", 18, "bold"), fg="red")
         self.state_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
         
         # RPM Control
@@ -358,7 +358,7 @@ class MotorControlFrame(tk.Frame):
         """Update all widgets in this frame with data from shared state."""
         with data_lock:
             state = latest_motor_state
-            self.actual_motor_state.set(state)
+            self.motor_state_cmd.set(state)
             
             # Update color based on state
             if state == "RUNNING":
