@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
 import rospy
-from std_msgs.msg import Float32, Bool, String # Keep String for state_cmd
+from std_msgs.msg import Float32, String
 import tkinter as tk
+from tkinter import ttk # Import the themed toolkit for tabs (Notebook)
 from threading import Thread, Lock
-import math # For isnan check
-import sys # For stderr
+import math
 
 # --- Configuration ---
 ZONE_COUNT = 3
@@ -16,56 +16,177 @@ GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates
 # --- Shared State (Thread Safety) ---
 # Use dictionaries to store data for each zone
 latest_temps = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
-# --- ADDED: Dictionary to store the latest ACTUAL state received from control node ---
 latest_state_cmds = {f"zone{i+1}": "OFF" for i in range(ZONE_COUNT)}
+latest_motor_state = "STOPPED" # Shared state for the motor
+
 # Lock to prevent race conditions when accessing shared data
 data_lock = Lock()
-
-# --- Tkinter Class Definition ---
 class ExtruderGUI(tk.Frame):
+    """Main application class that holds the tabbed notebook."""
     def __init__(self, master):
         super().__init__(master)
         self.master = master
-        self.master.title("Frankenmolder Extruder Control")
+        self.master.title("Frankenmolder Control Interface")
+        # Adjust window size if needed
+        # self.master.geometry("800x480") 
 
-        # ROS Communication Objects (Initialized later)
-        self.setpoint_pubs = {}
-        self.state_cmd_pubs = {} # Still needed to send commands TO control node
-        self.temp_subs = {}
-        # --- ADDED: Keep track of state_cmd subscribers ---
-        self.state_cmd_subs = {}
+        # --- ROS Communication Objects ---
+        self.publishers = {}
+        self.subscribers = {}
 
-        # --- Data Storage (Tkinter Variables) ---
-        self.current_temps = {} # Dict: { "zone1": tk.StringVar, ... }
-        self.target_setpoints = {} # Dict: { "zone1": tk.DoubleVar, ... }
-        # --- This now reflects the ACTUAL state received from control node ---
-        self.current_mode = {} # Dict: { "zone1": tk.StringVar, ... }
+        # --- Create the Tabbed Notebook ---
+        self.notebook = ttk.Notebook(self.master)
 
-        self.message_var = tk.StringVar(value="System Initialized.") # Status message
+        # Create the frames for each tab
+        self.dashboard_frame = DashboardFrame(self.notebook)
+        self.heater_frame = HeaterControlFrame(self.notebook, self) # Pass self (main app)
+        self.motor_frame = MotorControlFrame(self.notebook, self) # Pass self (main app)
 
-        # Initialize Tkinter variables for each zone
-        for i in range(ZONE_COUNT):
-            zone_id = f"zone{i+1}"
-            self.current_temps[zone_id] = tk.StringVar(value="--")
-            self.target_setpoints[zone_id] = tk.DoubleVar(value=200.0) # Default target
-            # Initialize display to OFF, will be updated by subscriber
-            self.current_mode[zone_id] = tk.StringVar(value="OFF") # Start displaying OFF state
+        # Add frames to the notebook as tabs
+        self.notebook.add(self.dashboard_frame, text='Dashboard')
+        self.notebook.add(self.heater_frame, text='Extruder Heaters')
+        self.notebook.add(self.motor_frame, text='Extruder Motor')
 
-        self.create_widgets()
+        self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
 
-        # Start the periodic GUI update check
-        self.master.after(GUI_POLL_INTERVAL_MS, self.check_for_updates)
+        # --- Status Bar (Shared by all tabs) ---
+        self.message_var = tk.StringVar(value="System Initialized.")
+        status_label = tk.Label(self.master, textvariable=self.message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        status_label.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 5))
 
-    def create_widgets(self):
+        # Start the periodic GUI update (polling)
+        self.master.after(GUI_POLL_INTERVAL_MS, self.poll_ros_updates)
+
+    def init_ros_comms(self):
+        """Initializes all ROS publishers and subscribers for all frames."""
+        rospy.loginfo("GUI: Initializing all ROS publishers and subscribers...")
+        try:
+            # --- Heater Publishers & Subscribers ---
+            for i in range(ZONE_COUNT):
+                zone_id = f"zone{i+1}"
+                # Publishers
+                self.publishers[f"{zone_id}_setpoint"] = rospy.Publisher(f'/extruder/{zone_id}/setpoint', Float32, queue_size=1)
+                self.publishers[f"{zone_id}_state_cmd"] = rospy.Publisher(f'/extruder/{zone_id}/state_cmd', String, queue_size=1)
+                
+                # Subscribers
+                self.subscribers[f"{zone_id}_temp"] = rospy.Subscriber(
+                    f'/extruder/{zone_id}/temperature', 
+                    Float32, 
+                    self.update_temp_callback, 
+                    callback_args=zone_id
+                )
+                self.subscribers[f"{zone_id}_state_cmd"] = rospy.Subscriber(
+                    f'/extruder/{zone_id}/state_cmd', # Listen to the same topic we publish to
+                    String,
+                    self.update_state_cmd_callback,
+                    callback_args=zone_id
+                )
+            
+            # --- Motor Publishers & Subscribers ---
+            self.publishers["motor_set_rpm"] = rospy.Publisher('/extruder/motor/set_rpm', Float32, queue_size=1)
+            self.publishers["motor_state_cmd"] = rospy.Publisher('/extruder/motor/state_cmd', String, queue_size=1)
+
+            self.subscribers["motor_actual_state"] = rospy.Subscriber(
+                '/extruder/motor/actual_state', # Listen for state from PICO
+                String,
+                self.update_motor_state_callback
+            )
+
+            rospy.loginfo("GUI: ROS Comms Initialized.")
+            self.message_var.set("ROS Connection Established.")
+            return True
+
+        except Exception as e:
+            err_msg = f"GUI: Error initializing ROS comms: {e}"
+            rospy.logerr(err_msg)
+            print(err_msg, file=sys.stderr, flush=True) # Ensure it appears
+            self.message_var.set("ROS Connection FAILED. Check logs.")
+            return False
+
+    # --- Thread-Safe Callbacks (Update shared data) ---
+    def update_temp_callback(self, temp_msg, zone_id):
+        """ROS thread callback: Safely update shared temp data."""
+        try:
+            with data_lock:
+                latest_temps[zone_id] = temp_msg.data
+        except Exception as e:
+            rospy.logerr(f"R_TEMP_CB ({zone_id}): Error storing temp data: {e}")
+
+    def update_state_cmd_callback(self, state_msg, zone_id):
+        """ROS thread callback: Safely update shared state data."""
+        try:
+            with data_lock:
+                latest_state_cmds[zone_id] = state_msg.data
+        except Exception as e:
+            rospy.logerr(f"R_STATE_CB ({zone_id}): Error storing state data: {e}")
+
+    def update_motor_state_callback(self, state_msg):
+        """ROS thread callback: Safely update shared motor state."""
+        try:
+            with data_lock:
+                global latest_motor_state # Ensure we modify the global
+                latest_motor_state = state_msg.data
+        except Exception as e:
+            rospy.logerr(f"R_MOTOR_CB: Error storing motor state: {e}")
+
+    # --- GUI Polling Function (Read shared data) ---
+    def poll_ros_updates(self):
+        """GUI thread loop: Safely read shared data and update all frames."""
+        try:
+            # Pass data to each frame to update its widgets
+            self.heater_frame.update_gui_widgets()
+            self.motor_frame.update_gui_widgets()
+            # self.dashboard_frame.update_gui_widgets() # Add when dashboard has data
+
+        except Exception as e:
+            err_msg = f"G_POLL: Error during GUI update: {e}"
+            rospy.logerr(err_msg)
+            self.message_var.set(err_msg)
+
+        # Reschedule the next check
+        self.master.after(GUI_POLL_INTERVAL_MS, self.poll_ros_updates)
+class DashboardFrame(tk.Frame):
+    """A blank frame for the main dashboard/overview page."""
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        
+        label = tk.Label(self, text="Main Dashboard (Overview)", font=("Arial", 24))
+        label.pack(padx=50, pady=50)
+        # Add high-level status widgets here later
+
+    def update_gui_widgets(self):
+        # Update dashboard widgets here
+        pass
+
+
+class HeaterControlFrame(tk.Frame):
+    """The frame containing the 3-Zone Heater controls."""
+    def __init__(self, parent, main_app, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.main_app = main_app # Reference to main app to access publishers
+
+        # --- Tkinter Variables (Local to this frame) ---
+        self.current_temps = {}
+        self.target_setpoints = {}
+        self.current_mode = {}
+        self.mode_labels = {} # Store refs to labels for coloring
+
         # --- Main Barrel Frame ---
-        barrel_frame = tk.Frame(self.master, bd=2, relief=tk.SUNKEN)
-        barrel_frame.grid(row=0, column=0, columnspan=ZONE_COUNT, padx=10, pady=10, sticky="ew") # Adjusted columnspan
+        barrel_frame = tk.Frame(self, bd=2, relief=tk.SUNKEN)
+        barrel_frame.pack(padx=10, pady=10, fill=tk.X, expand=True)
 
         # --- Create Controls for Each Zone ---
         for i in range(ZONE_COUNT):
             zone_id = f"zone{i+1}"
-            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=10, pady=10)
-            zone_frame.grid(row=0, column=i, padx=5, pady=5, sticky="nsew") # Place zones side-by-side
+            
+            # Init Tkinter vars
+            self.current_temps[zone_id] = tk.StringVar(value="--")
+            self.target_setpoints[zone_id] = tk.DoubleVar(value=200.0)
+            self.current_mode[zone_id] = tk.StringVar(value="OFF")
+
+            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=10, pady=10, font=("Arial", 14, "bold"))
+            zone_frame.grid(row=0, column=i, padx=5, pady=5, sticky="nsew")
+            barrel_frame.grid_columnconfigure(i, weight=1) # Make zones expand equally
 
             # Temperature Display
             tk.Label(zone_frame, text="Temp:", font=("Arial", 12)).grid(row=0, column=0, sticky="w")
@@ -73,234 +194,231 @@ class ExtruderGUI(tk.Frame):
             temp_label.grid(row=0, column=1, columnspan=2, sticky="e")
             tk.Label(zone_frame, text="°C", font=("Arial", 12)).grid(row=0, column=3, sticky="w")
 
-            # Mode Display (Reflects ACTUAL state from control node)
+            # Commanded Mode Display
             tk.Label(zone_frame, text="Mode:", font=("Arial", 12)).grid(row=1, column=0, sticky="w")
             mode_label = tk.Label(zone_frame, textvariable=self.current_mode[zone_id], font=("Arial", 12, "italic"))
             mode_label.grid(row=1, column=1, columnspan=3, sticky="e")
-            setattr(self, f"{zone_id}_mode_label", mode_label) # Store ref for potential coloring
+            self.mode_labels[zone_id] = mode_label # Store ref for coloring
 
             # Setpoint Control (Stacked)
             tk.Label(zone_frame, text="Setpoint (°C):", font=("Arial", 12)).grid(row=2, column=0, columnspan=4, pady=(10, 0), sticky="w")
             entry = tk.Entry(zone_frame, textvariable=self.target_setpoints[zone_id], width=10, font=("Arial", 16))
-            entry.grid(row=3, column=0, columnspan=4, pady=5, ipady=8)
+            entry.grid(row=3, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
             set_button = tk.Button(zone_frame, text="Set Target", font=("Arial", 14, "bold"), width=15,
                                    command=lambda zid=zone_id: self.publish_setpoint(zid))
-            set_button.grid(row=4, column=0, columnspan=4, pady=5, ipady=8)
+            set_button.grid(row=4, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
 
             # State Control Buttons (Stacked OFF/START)
             tk.Label(zone_frame, text="Commands:", font=("Arial", 12)).grid(row=5, column=0, columnspan=4, pady=(15, 0), sticky="w")
             button_frame = tk.Frame(zone_frame)
-            button_frame.grid(row=6, column=0, columnspan=4, pady=(5, 5))
+            button_frame.grid(row=6, column=0, columnspan=4, pady=(5, 5), sticky="ew")
 
-            off_button = tk.Button(button_frame, text="OFF", bg="red", fg="white", font=("Arial", 12, "bold"), width=12, height=2, # Size params
+            off_button = tk.Button(button_frame, text="OFF", bg="red", fg="white", font=("Arial", 12, "bold"), height=2,
                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "OFF"))
-            off_button.pack(side=tk.TOP, fill=tk.X, pady=2) # Stack vertically
+            off_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
-            start_button = tk.Button(button_frame, text="START", bg="orange", fg="black", font=("Arial", 12, "bold"), width=12, height=2, # Size params
+            start_button = tk.Button(button_frame, text="START", bg="orange", fg="black", font=("Arial", 12, "bold"), height=2,
                                      command=lambda zid=zone_id: self.publish_state_cmd(zid, "HEATING"))
-            start_button.pack(side=tk.TOP, fill=tk.X, pady=2) # Stack vertically
+            start_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
+    def update_gui_widgets(self):
+        """Update all widgets in this frame with data from shared state."""
+        with data_lock:
+            for i in range(ZONE_COUNT):
+                zone_id = f"zone{i+1}"
+                
+                # Update Temp
+                temp_val = latest_temps.get(zone_id, float('nan'))
+                if not math.isnan(temp_val):
+                    self.current_temps[zone_id].set(f"{temp_val:.1f}")
+                else:
+                    self.current_temps[zone_id].set("--")
+                
+                # Update Mode from state_cmd
+                mode = latest_state_cmds.get(zone_id, "OFF")
+                self.current_mode[zone_id].set(mode)
+                
+                # Update Color
+                mode_label = self.mode_labels.get(zone_id)
+                if mode_label:
+                    if mode == "OFF": mode_label.config(fg="red")
+                    elif mode == "HEATING": mode_label.config(fg="orange")
+                    elif mode == "PID": mode_label.config(fg="green")
+                    else: mode_label.config(fg="black")
 
-        # --- Status Bar ---
-        status_label = tk.Label(self.master, textvariable=self.message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
-        status_label.grid(row=1, column=0, columnspan=ZONE_COUNT, sticky='ew', padx=10, pady=(0, 5)) # Adjusted columnspan
-
-    # --- GUI Update Methods ---
-    def check_for_updates(self):
-        """Periodically check shared data and update Tkinter variables."""
-        # rospy.logdebug("G_POLL: Checking for updates...") # Can be noisy
-        try:
-            with data_lock:
-                for i in range(ZONE_COUNT):
-                    zone_id = f"zone{i+1}"
-                    temp_val = latest_temps.get(zone_id, float('nan')) # Use get for safety
-                    # --- Read ACTUAL state from shared dictionary ---
-                    actual_state = latest_state_cmds.get(zone_id, "OFF") # Use get for safety
-
-                    # Update Temperature Display
-                    if not math.isnan(temp_val):
-                        self.current_temps[zone_id].set(f"{temp_val:.1f}")
-                    else:
-                        self.current_temps[zone_id].set("--")
-
-                    # --- Update Mode Display using ACTUAL state ---
-                    self.current_mode[zone_id].set(actual_state) # Update Tkinter Var
-
-                    # Update Mode Label Color based on ACTUAL state
-                    mode_label = getattr(self, f"{zone_id}_mode_label", None)
-                    if mode_label:
-                        if actual_state == "OFF": mode_label.config(fg="red")
-                        elif actual_state == "HEATING": mode_label.config(fg="orange")
-                        elif actual_state == "PID": mode_label.config(fg="green")
-                        else: mode_label.config(fg="black") # Default/Unknown
-
-        except Exception as e:
-            err_msg = f"G_POLL: Error during GUI update: {e}"
-            rospy.logerr(err_msg)
-            self.message_var.set(err_msg) # Show error in status bar
-
-        # Reschedule the next check
-        self.master.after(GUI_POLL_INTERVAL_MS, self.check_for_updates)
-
-    # --- ROS Data Callbacks ---
-    def update_temp_callback(self, temp_msg, zone_id):
-        """ROS thread callback: Safely update shared temp data."""
-        # rospy.logdebug(f"R_TEMP_CB ({zone_id}): Received {temp_msg.data}")
-        try:
-            with data_lock:
-                latest_temps[zone_id] = temp_msg.data
-        except Exception as e:
-            rospy.logerr(f"R_TEMP_CB ({zone_id}): Error storing temp data: {e}")
-
-    # --- ADDED CALLBACK for state_cmd topic ---
-    def update_state_cmd_callback(self, state_msg, zone_id):
-        """ROS thread callback: Safely update shared state data."""
-        rospy.logdebug(f"R_STATE_CB ({zone_id}): Received state '{state_msg.data}'")
-        try:
-            with data_lock:
-                latest_state_cmds[zone_id] = state_msg.data
-        except Exception as e:
-            rospy.logerr(f"R_STATE_CB ({zone_id}): Error storing state data: {e}")
-    # ----------------------------------------------
-
-    # --- ROS Publishing Methods ---
     def publish_setpoint(self, zone_id):
         """Validate and publish the setpoint."""
-        pub = self.setpoint_pubs.get(zone_id)
+        pub = self.main_app.publishers.get(f"{zone_id}_setpoint")
         if not pub:
-            rospy.logerr(f"Setpoint Publisher for {zone_id} not initialized.")
-            self.message_var.set(f"Error: Publisher for {zone_id} not ready.")
+            rospy.logerr(f"Setpoint Publisher for {zone_id} not found.")
             return
 
         try:
             setpoint_value = self.target_setpoints[zone_id].get()
-            if not isinstance(setpoint_value, (int, float)): raise ValueError("Input must be a number.")
-            if not (MIN_SETPOINT <= setpoint_value <= MAX_SETPOINT): raise ValueError(f"Setpoint: {MIN_SETPOINT}-{MAX_SETPOINT}°C.")
+            if not (MIN_SETPOINT <= setpoint_value <= MAX_SETPOINT):
+                raise ValueError(f"Setpoint must be between {MIN_SETPOINT} and {MAX_SETPOINT}°C.")
 
             msg = Float32(setpoint_value)
             pub.publish(msg)
             rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value}")
-            self.message_var.set(f"{zone_id}: Setpoint {setpoint_value:.1f}°C sent.")
+            self.main_app.message_var.set(f"{zone_id}: Setpoint {setpoint_value:.1f}°C accepted.")
 
-            # --- REMOVED Implicit PID command publish ---
-            # self.publish_state_cmd(zone_id, "PID")
-
-        except ValueError as ve:
-             rospy.logwarn(f"GUI Validation Error ({zone_id}): {ve}")
-             self.message_var.set(f"Error ({zone_id}): {ve}")
         except Exception as e:
-            rospy.logerr(f"GUI publish_setpoint Error ({zone_id}): {e}")
-            self.message_var.set(f"Error publishing setpoint for {zone_id}.")
+             rospy.logwarn(f"GUI Validation Error ({zone_id}): {e}")
+             self.main_app.message_var.set(f"Error ({zone_id}): {e}")
 
     def publish_state_cmd(self, zone_id, state_command):
         """Publish the state command ('OFF', 'HEATING')."""
-        pub = self.state_cmd_pubs.get(zone_id)
+        pub = self.main_app.publishers.get(f"{zone_id}_state_cmd")
         if not pub:
-            rospy.logerr(f"State Command Publisher for {zone_id} not initialized.")
-            self.message_var.set(f"Error: State Publisher for {zone_id} not ready.")
+            rospy.logerr(f"State Command Publisher for {zone_id} not found.")
             return
-
-        # Basic check to prevent spamming the same command (optional)
-        # current_displayed_mode = self.current_mode[zone_id].get()
-        # if current_displayed_mode == state_command:
-        #     rospy.logdebug(f"GUI: State command '{state_command}' for {zone_id} already sent/active.")
-        #     return
 
         try:
             msg = String(state_command)
             pub.publish(msg)
             rospy.loginfo(f"GUI published state_cmd for {zone_id}: {state_command}")
-            # --- We NO LONGER update self.current_mode directly here ---
-            # self.current_mode[zone_id].set(state_command) # Let the subscriber handle updates
-            self.message_var.set(f"{zone_id}: Sent command '{state_command}'.")
+            # GUI now updates its mode based on the subscription echo, not locally.
+            self.main_app.message_var.set(f"{zone_id}: {state_command} command sent.")
 
         except Exception as e:
             rospy.logerr(f"GUI publish_state_cmd Error ({zone_id}): {e}")
-            self.message_var.set(f"Error sending command for {zone_id}.")
 
-    # --- ROS Initialization (Called from Main Thread) ---
-    def init_ros_comms(self):
-        """Initialize ROS publishers and subscribers. MUST be called from main thread."""
-        rospy.loginfo("GUI: Initializing ROS Comms...")
+
+class MotorControlFrame(tk.Frame):
+    """The frame containing the Extruder Motor controls."""
+    def __init__(self, parent, main_app, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.main_app = main_app
+
+        # --- Tkinter Variables ---
+        self.target_rpm = tk.DoubleVar(value=10.0)
+        self.actual_motor_state = tk.StringVar(value="STOPPED")
+
+        # --- Layout ---
+        control_frame = tk.LabelFrame(self, text="Motor Control", padx=20, pady=20, font=("Arial", 14, "bold"))
+        control_frame.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
+
+        # State Display
+        tk.Label(control_frame, text="Actual State:", font=("Arial", 14)).grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        self.state_label = tk.Label(control_frame, textvariable=self.actual_motor_state, font=("Arial", 18, "bold"), fg="red")
+        self.state_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+        
+        # RPM Control
+        tk.Label(control_frame, text="Target RPM:", font=("Arial", 14)).grid(row=1, column=0, padx=10, pady=10, sticky="w")
+        rpm_entry = tk.Entry(control_frame, textvariable=self.target_rpm, width=10, font=("Arial", 18))
+        rpm_entry.grid(row=1, column=1, padx=10, pady=10, ipady=8)
+        rpm_button = tk.Button(control_frame, text="Set RPM", font=("Arial", 14, "bold"),
+                               command=self.publish_set_rpm)
+        rpm_button.grid(row=1, column=2, padx=10, pady=10, ipady=8)
+
+        # Command Buttons
+        button_frame = tk.Frame(control_frame)
+        button_frame.grid(row=2, column=0, columnspan=3, pady=20)
+        
+        start_button = tk.Button(button_frame, text="START MOTOR", bg="green", fg="white", font=("Arial", 14, "bold"), height=2, width=15,
+                                 command=lambda: self.publish_motor_cmd("START"))
+        start_button.pack(side=tk.LEFT, padx=10)
+
+        stop_button = tk.Button(button_frame, text="STOP MOTOR", bg="red", fg="white", font=("Arial", 14, "bold"), height=2, width=15,
+                                command=lambda: self.publish_motor_cmd("STOP"))
+        stop_button.pack(side=tk.LEFT, padx=10)
+
+    def update_gui_widgets(self):
+        """Update all widgets in this frame with data from shared state."""
+        with data_lock:
+            state = latest_motor_state
+            self.actual_motor_state.set(state)
+            
+            # Update color based on state
+            if state == "RUNNING":
+                self.state_label.config(fg="green")
+            elif state == "STOPPED":
+                self.state_label.config(fg="red")
+            elif state == "FAULT":
+                self.state_label.config(fg="orange")
+            else:
+                self.state_label.config(fg="black")
+
+    def publish_set_rpm(self):
+        """Validate and publish the target RPM."""
+        pub = self.main_app.publishers.get("motor_set_rpm")
+        if not pub:
+            rospy.logerr("Motor Set RPM Publisher not found.")
+            return
+
         try:
-            for i in range(ZONE_COUNT):
-                zone_id = f"zone{i+1}"
-                # Publishers
-                self.setpoint_pubs[zone_id] = rospy.Publisher(f'/extruder/{zone_id}/setpoint', Float32, queue_size=1)
-                self.state_cmd_pubs[zone_id] = rospy.Publisher(f'/extruder/{zone_id}/state_cmd', String, queue_size=1)
+            rpm_value = self.target_rpm.get()
+            # Add validation as needed
+            if rpm_value < 0:
+                raise ValueError("RPM cannot be negative.")
+            
+            msg = Float32(rpm_value)
+            pub.publish(msg)
+            rospy.loginfo(f"GUI published motor_set_rpm: {rpm_value}")
+            self.main_app.message_var.set(f"Motor RPM target {rpm_value} sent.")
 
-                # Subscribers
-                self.temp_subs[zone_id] = rospy.Subscriber(
-                    f'/extruder/{zone_id}/temperature',
-                    Float32,
-                    self.update_temp_callback,
-                    callback_args=zone_id # Pass zone_id to callback
-                )
-                # --- ADDED Subscriber for state_cmd ---
-                self.state_cmd_subs[zone_id] = rospy.Subscriber(
-                    f'/extruder/{zone_id}/state_cmd',
-                    String,
-                    self.update_state_cmd_callback,
-                    callback_args=zone_id # Pass zone_id to callback
-                )
-                # ------------------------------------
-            rospy.loginfo("GUI: ROS Comms Initialized.")
-            return True
         except Exception as e:
-            rospy.logfatal(f"GUI: Failed to initialize ROS Comms: {e}")
-            self.message_var.set(f"FATAL: Failed to init ROS Comms: {e}")
-            return False
+            rospy.logwarn(f"GUI Validation Error (Motor): {e}")
+            self.main_app.message_var.set(f"Error (Motor): {e}")
 
-    # --- ROS Background Thread ---
-    def ros_spin_thread(self):
-        """Runs rospy.spin() in a separate thread."""
-        rospy.loginfo("GUI: ROS Spin thread started.")
-        # --- FIX: Call the correct method name `init_ros_comms` ---
-        # Also, check `self.init_ros_comms()` not `app.setup_ros_comms()`
-        # NOTE: Initialization is now called from main(), this thread just spins
-        # if not self.init_ros_comms(): # Correct Name and reference - MOVED TO MAIN
-        #    rospy.logerr("GUI: ROS Comms failed to initialize in spin thread. Exiting thread.")
-        #    return # Exit thread if comms fail
-        # ---------------------------------------
-        rospy.spin()
-        rospy.loginfo("GUI: ROS Spin thread finished.")
+    def publish_motor_cmd(self, command):
+        """Publish the motor command ('START', 'STOP')."""
+        pub = self.main_app.publishers.get("motor_state_cmd")
+        if not pub:
+            rospy.logerr("Motor State Command Publisher not found.")
+            return
 
-
-# --- Main Execution Block ---
-def main():
-    # --- Initialize ROS Node FIRST in the main thread ---
+        try:
+            msg = String(command)
+            pub.publish(msg)
+            rospy.loginfo(f"GUI published motor_state_cmd: {command}")
+            self.main_app.message_var.set(f"Motor {command} command sent.")
+        except Exception as e:
+            rospy.logerr(f"GUI publish_motor_cmd Error: {e}")
+def ros_spin_thread(app):
+    """Handles all ROS communication in a separate thread."""
+    rospy.loginfo("GUI: ROS spin thread started.")
     try:
+        if not app.init_ros_comms():
+            rospy.logerr("GUI: Failed to initialize ROS comms. ROS thread exiting.")
+            return
+        
+        rospy.loginfo("GUI: Starting rospy.spin().")
+        rospy.spin() # Keeps the ROS thread alive, handling callbacks
+        rospy.loginfo("GUI: rospy.spin() finished.")
+        
+    except rospy.ROSInterruptException:
+        rospy.loginfo("GUI: ROS spin thread interrupted.")
+    except Exception as e:
+        rospy.logerr(f"GUI: Unhandled exception in ROS spin thread: {e}")
+
+def main():
+    """Main function to initialize ROS node and start Tkinter GUI."""
+    try:
+        # Initialize the ROS node in the main thread
         rospy.init_node('extruder_gui_node', anonymous=True)
         rospy.loginfo("GUI Node initialized in main thread.")
-    except Exception as e:
-        print(f"FATAL: Failed to initialize ROS Node in main thread: {e}", file=sys.stderr, flush=True)
-        sys.exit(1) # Cannot proceed without ROS node
-
-    # --- Create Tkinter App ---
-    root = tk.Tk()
-    app = ExtruderGUI(root)
-
-    # --- Initialize ROS Comms AFTER GUI is created ---
-    if not app.init_ros_comms():
-        # Handle fatal error during pub/sub setup if needed
-        # For now, GUI might still run but show errors or no data
-        print("ERROR: ROS Communication setup failed. GUI might not function correctly.", file=sys.stderr, flush=True)
-        # Optionally: root.destroy() sys.exit(1)
-
-    # --- Start ROS Spin Thread ---
-    ros_thread = Thread(target=app.ros_spin_thread)
-    ros_thread.daemon = True # Allows GUI to exit cleanly
-    ros_thread.start()
-
-    # --- Start Tkinter Main Loop ---
-    try:
+        
+        # Create the Tkinter root window
+        root = tk.Tk()
+        app = ExtruderGUI(root)
+        
+        # Start the ROS communication thread
+        # Pass the 'app' instance to the thread
+        ros_thread = Thread(target=ros_spin_thread, args=(app,), daemon=True)
+        ros_thread.start()
+        
+        # Start the Tkinter GUI loop in the main thread
+        rospy.loginfo("GUI: Starting Tkinter mainloop().")
         root.mainloop()
-    except KeyboardInterrupt:
-        rospy.loginfo("GUI received KeyboardInterrupt. Shutting down.")
-    finally:
-        # Optional cleanup if needed when GUI closes
-        rospy.loginfo("GUI main loop finished.")
-
+        rospy.loginfo("GUI: Tkinter mainloop() exited.")
+        
+    except rospy.ROSInterruptException:
+        rospy.loginfo("GUI: Main thread interrupted. Shutting down.")
+    except Exception as e:
+        rospy.logerr(f"GUI: Unhandled exception in main: {e}")
+        print(f"FATAL: GUI Main thread crashed: {e}", file=sys.stderr, flush=True)
 
 if __name__ == '__main__':
     main()
