@@ -266,9 +266,3 @@ if __name__ == '__main__':
                  print("DEBUG: GPIO module not imported or setup failed, skipping cleanup.", flush=True)
         except NameError:
              print("DEBUG: GPIO object not defined, skipping cleanup.", flush=True)
-        except Exception as cleanup_e:
-             print(f"ERROR: Error during GPIO cleanup: {cleanup_e}", file=sys.stderr, flush=True)
-
-except Exception as top_level_e:
-    print(f"FATAL: Uncaught exception at top level: {top_level_e}", file=sys.stderr, flush=True)
-    sys.exit(1)
