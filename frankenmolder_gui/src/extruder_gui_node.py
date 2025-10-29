@@ -37,14 +37,43 @@ class ExtruderGUI(tk.Frame):
         # --- Create the Tabbed Notebook ---
         self.notebook = ttk.Notebook(self.master)
 
-        # Create the frames for each tab
+        # --- Tab 1: Dashboard ---
         self.dashboard_frame = DashboardFrame(self.notebook)
-        self.heater_frame = HeaterControlFrame(self.notebook, self) # Pass self (main app)
-        self.motor_frame = MotorControlFrame(self.notebook, self) # Pass self (main app)
-
-        # Add frames to the notebook as tabs
         self.notebook.add(self.dashboard_frame, text='Dashboard')
-        self.notebook.add(self.heater_frame, text='Extruder Heaters')
+
+        # --- Tab 2: Heater Control (with Scrollbar) ---
+        # Create a container frame for the tab content
+        heater_tab_container = ttk.Frame(self.notebook)
+        heater_tab_container.pack(fill="both", expand=True) # Fill the tab
+
+        # Create a Canvas widget
+        canvas = tk.Canvas(heater_tab_container)
+        # Create a Scrollbar
+        scrollbar = ttk.Scrollbar(heater_tab_container, orient="vertical", command=canvas.yview)
+        # Configure the canvas to use the scrollbar
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Pack the scrollbar and canvas
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # Create the actual content frame (HeaterControlFrame) *inside* the canvas
+        self.heater_frame = HeaterControlFrame(canvas, self) # Pass canvas as parent
+        
+        # Add the content frame to the canvas
+        canvas.create_window((0, 0), window=self.heater_frame, anchor="nw")
+
+        # Bind the <Configure> event of the content frame to update the canvas scrollregion
+        # This makes the scrollbar aware of the content's total size
+        self.heater_frame.bind("<Configure>", 
+                               lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        # Add the container (with canvas and scrollbar) to the notebook
+        self.notebook.add(heater_tab_container, text='Extruder Heaters')
+        # --- End of Tab 2 Setup ---
+
+        # --- Tab 3: Motor Control ---
+        self.motor_frame = MotorControlFrame(self.notebook, self) # Pass self (main app)
         self.notebook.add(self.motor_frame, text='Extruder Motor')
 
         self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
@@ -145,6 +174,7 @@ class ExtruderGUI(tk.Frame):
 
         # Reschedule the next check
         self.master.after(GUI_POLL_INTERVAL_MS, self.poll_ros_updates)
+
 class DashboardFrame(tk.Frame):
     """A blank frame for the main dashboard/overview page."""
     def __init__(self, parent, **kwargs):
