@@ -18,6 +18,8 @@ echo "Attempting to launch Sensor Node 2..."
 rosrun temperature_sensor_pkg extruder_zone2_temp_node.py &
 echo "Sensor Node 2 launch command sent."
 
+rosrun temperature_sensor_pkg extruder_zone3_temp_node.py &
+
 # Launch Heater Control Node directly with python3 (Keep this method as it was working before)
 echo "Attempting to launch Heater Control Node directly with python3..."
 python3 /app/src/heater_control_pkg/src/heater_control_node.py &

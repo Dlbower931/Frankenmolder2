@@ -28,6 +28,7 @@ services:
       # Map SPI devices
       - /dev/spidev0.0:/dev/spidev0.0
       - /dev/spidev0.1:/dev/spidev0.1
+      - /dev/spidev0.2:/dev/spidev0.2
       # Map gpiomem (Essential for RPi.GPIO)
       - /dev/gpiomem:/dev/gpiomem
       # Map vchiq (optional GPU)
