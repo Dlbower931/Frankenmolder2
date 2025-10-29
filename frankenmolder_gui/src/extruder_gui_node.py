@@ -115,11 +115,14 @@ class ExtruderGUI(tk.Frame):
             self.publishers["motor_set_rpm"] = rospy.Publisher('/extruder/motor/set_rpm', Float32, queue_size=1)
             self.publishers["motor_state_cmd"] = rospy.Publisher('/extruder/motor/state_cmd', String, queue_size=1)
 
+            # --- UPDATED SUBSCRIBER ---
+            # Change subscription from /actual_state to /state_cmd
             self.subscribers["motor_state_cmd"] = rospy.Subscriber(
-                '/extruder/motor/state_cmd', # Listen for state from PICO
+                '/extruder/motor/state_cmd', # Listen for state from PICO/self
                 String,
                 self.update_motor_state_callback
             )
+            # --------------------------
 
             rospy.loginfo("GUI: ROS Comms Initialized.")
             self.message_var.set("ROS Connection Established.")
