@@ -31,7 +31,7 @@ actual_states = {f"zone{i+1}": "OFF" for i in range(ZONE_COUNT)}
 pid_below_band_start_time = {f"zone{i+1}": None for i in range(ZONE_COUNT)}
 heater_pin_states = {f"zone{i+1}": False for i in range(ZONE_COUNT)}
 
-# --- Publishers ---
+# --- Publishers --
 state_cmd_pubs = {}
 
 # --- GPIO Setup ---
