@@ -36,8 +36,6 @@ state_cmd_pubs = {}
 
 # --- GPIO Setup ---
 def setup_gpio():
-# ... (rest of function) ...
-[Immersive content redacted for brevity.]
     try:
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
@@ -53,15 +51,11 @@ def setup_gpio():
 
 # --- ROS Callbacks ---
 def create_callback(zone_id, data_dict, data_type):
-# ... (rest of function) ...
-[Immersive content redacted for brevity.]
     def callback(msg):
         global actual_states
         valid = False
         value = None
         if data_type == Float32:
-# ... (validation logic) ...
-[Immersive content redacted for brevity.]
             if isinstance(msg, Float32) and msg.data >= 0:
                  value = msg.data
                  valid = True
@@ -81,8 +75,6 @@ def create_callback(zone_id, data_dict, data_type):
                      rospy.loginfo(f"HeaterControl({zone_id}): Received State Command Request: {value}")
                      current_actual_state = actual_states.get(zone_id)
                      if value == "OFF" and current_actual_state != "OFF":
-# ... (OFF logic) ...
-[Immersive content redacted for brevity.]
                          rospy.loginfo(f"HeaterControl({zone_id}): Forcing state to OFF due to external command.")
                          actual_states[zone_id] = "OFF"
                          pid_below_band_start_time[zone_id] = None
@@ -90,8 +82,6 @@ def create_callback(zone_id, data_dict, data_type):
                          if zone_id in state_cmd_pubs:
                              state_cmd_pubs[zone_id].publish(String(actual_states[zone_id]))
                      elif value == "HEATING" and current_actual_state == "OFF":
-# ... (HEATING logic) ...
-[Immersive content redacted for brevity.]
                          temp_ok = not math.isnan(current_temps.get(zone_id, float('nan')))
                          setpoint_ok = current_setpoints.get(zone_id, 0.0) > 0
                          if temp_ok and setpoint_ok:
@@ -107,8 +97,6 @@ def create_callback(zone_id, data_dict, data_type):
                              #     state_cmd_pubs[zone_id].publish(String("OFF"))
 
                  elif data_type == Float32:
-# ... (Float32 logic) ...
-[Immersive content redacted for brevity.]
                      if zone_id in current_setpoints and data_dict == current_setpoints:
                          rospy.loginfo(f"HeaterControl({zone_id}): Received new setpoint: {value:.1f} C")
                          if actual_states.get(zone_id) == "PID":
@@ -120,8 +108,6 @@ def create_callback(zone_id, data_dict, data_type):
 
 # --- Control & GPIO Logic ---
 def control_heater(zone_id, turn_on):
-# ... (rest of function) ...
-[Immersive content redacted for brevity.]
     global heater_pin_states
     pin = HEATER_PINS.get(zone_id)
     if pin is None:
@@ -141,14 +127,10 @@ def control_heater(zone_id, turn_on):
             rospy.logerr(f"HeaterControl({zone_id}): Failed to set GPIO {pin}: {e}")
 
 def control_loop():
-# ... (rest of function) ...
-[Immersive content redacted for brevity.]
     global actual_states, pid_below_band_start_time
 
     for i in range(ZONE_COUNT):
         zone_id = f"zone{i+1}"
-# ... (variable setup) ...
-[Immersive content redacted for brevity.]
         temp = current_temps.get(zone_id, float('nan'))
         setpoint = current_setpoints.get(zone_id, 0.0)
         current_actual = actual_states.get(zone_id, "OFF")
@@ -168,14 +150,10 @@ def control_loop():
             heater_should_be_on = False # Force heater OFF, but leave state as is
 
         elif current_actual == "OFF":
-# ... (rest of state logic) ...
-[Immersive content redacted for brevity.]
             heater_should_be_on = False
             pid_below_band_start_time[zone_id] = None
 
         elif current_actual == "HEATING":
-# ... (rest of state logic) ...
-[Immersive content redacted for brevity.]
             heater_should_be_on = True
             lower_band = setpoint - HYSTERESIS
             comparison_result = False
@@ -194,13 +172,9 @@ def control_loop():
                 rospy.loginfo(f"INFO({zone_id}): Temp {temp:.1f}C in band. Transitioning HEATING -> PID")
 
         elif current_actual == "PID":
-# ... (rest of state logic) ...
-[Immersive content redacted for brevity.]
             if not math.isnan(temp):
                 lower_band = setpoint - HYSTERESIS
                 if temp < lower_band:
-# ... (timeout logic) ...
-[Immersive content redacted for brevity.]
                     if pid_below_band_start_time[zone_id] is None:
                         pid_below_band_start_time[zone_id] = rospy.Time.now()
                         rospy.logwarn(f"WARN({zone_id}): Temp {temp:.1f}C dropped below PID band ({lower_band:.1f}C). Starting timer...")
@@ -217,8 +191,6 @@ def control_loop():
                             heater_should_be_on = True
                 else:
                     pid_below_band_start_time[zone_id] = None
-# ... (rest of PID logic) ...
-[Immersive content redacted for brevity.]
                     if temp < setpoint:
                         heater_should_be_on = True
                     else:
@@ -232,8 +204,6 @@ def control_loop():
 
         # --- Publish State ---
         current_state_for_pub = actual_states.get(zone_id, "OFF")
-# ... (rest of loop) ...
-[Immersive content redacted for brevity.]
         if zone_id in state_cmd_pubs:
             if previous_actual_state != current_state_for_pub:
                 rospy.loginfo(f"INFO({zone_id}): Actual state changed {previous_actual_state} -> {current_state_for_pub}. Publishing to state_cmd.")
@@ -241,8 +211,6 @@ def control_loop():
 
 
 def main_heater_control():
-# ... (rest of main function) ...
-[Immersive content redacted for brevity.]
     global state_cmd_pubs
     try:
         rospy.init_node('heater_control_node', anonymous=True)
@@ -259,8 +227,6 @@ def main_heater_control():
 
     rospy.loginfo("Setting up publishers and subscribers...")
     for i in range(ZONE_COUNT):
-# ... (pub/sub setup) ...
-[Immersive content redacted for brevity.]
         zone_id = f"zone{i+1}"
         try:
             state_cmd_pubs[zone_id] = rospy.Publisher(f'/extruder/{zone_id}/state_cmd', String, queue_size=10, latch=True)
@@ -273,15 +239,11 @@ def main_heater_control():
 
 
     rospy.loginfo("Pub/Sub setup complete.")
-# ... (rest of main function) ...
-[Immersive content redacted for brevity.]
     rate = rospy.Rate(1)
     rospy.loginfo("Heater Control Node Started (GPIO Enabled). Entering main control loop...")
 
     loop_counter = 0
     while not rospy.is_shutdown():
-# ... (loop try/except) ...
-[Immersive content redacted for brevity.]
         loop_counter += 1
         try:
             control_loop()
@@ -290,8 +252,6 @@ def main_heater_control():
         rate.sleep()
 
 if __name__ == '__main__':
-# ... (main try/except/finally) ...
-[Immersive content redacted for brevity.]
     try:
         main_heater_control()
     except rospy.ROSInterruptException:
@@ -310,8 +270,5 @@ if __name__ == '__main__':
              print(f"ERROR: Error during GPIO cleanup: {cleanup_e}", file=sys.stderr, flush=True)
 
 except Exception as top_level_e:
-# ... (top-level except) ...
-[Immersive content redacted for brevity.]
     print(f"FATAL: Uncaught exception at top level: {top_level_e}", file=sys.stderr, flush=True)
     sys.exit(1)
-
