@@ -10,23 +10,25 @@ import sys
 import RPi.GPIO as GPIO
 
 # --- Configuration ---
-# Software Chip Select Pin (Connected to MAX6675 CS)
+# Software Chip Select Pin (Connected to MAX6775 CS)
 SOFTWARE_CS_PIN = 16 # GPIO 16 (Physical Pin 36)
 
 # Hardware SPI Configuration
 SPI_BUS = 0
-SPI_DEVICE = 0 # We must open a device, but we'll disable its CS line
+# --- CRITICAL FIX: Change device to 1 to avoid conflict with Zone 1 (Device 0) ---
+SPI_DEVICE = 1 # We must open an existing device, but we'll disable its CS line
+# --------------------------------------------------------------------------
 
 # --- Initialize SPI and GPIO ---
 try:
     # Initialize spidev library (controls SCK, MOSI, MISO)
     spi = spidev.SpiDev() # Create object
-    spi.open(SPI_BUS, SPI_DEVICE) # Open the bus/device
+    spi.open(SPI_BUS, SPI_DEVICE) # Open the bus/device (e.g., /dev/spidev0.1)
     spi.max_speed_hz = 500000 # Set SPI speed
     
     # --- CRITICAL FIX: Disable hardware chip select ---
-    # Tell spidev to NOT control the hardware CE0 pin.
-    # We will control the chip select manually via RPi.GPIO.
+    # Tell spidev to NOT control the hardware CE1 pin.
+    # We will control the chip select manually via RPi.GPIO (Pin 16).
     spi.no_cs = True 
     # --------------------------------------------------
 
@@ -52,7 +54,7 @@ def read_max6675_sw_cs():
         # 1. Assert Chip Select LOW (Activate the sensor)
         GPIO.output(SOFTWARE_CS_PIN, GPIO.LOW)
         # Short delay might be needed after CS goes low, depending on sensor/speed
-        # time.sleep(0.0001)
+        # time.sleep(0.0001) 
 
         # 2. Read two bytes using spidev
         data = spi.readbytes(2)
