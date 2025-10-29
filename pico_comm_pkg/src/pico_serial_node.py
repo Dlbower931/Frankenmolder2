@@ -7,7 +7,6 @@ import threading
 import time
 import json
 from std_msgs.msg import String, Float32, Bool
-from geometry_msgs.msg import Twist
 
 class PicoSerialComm:
     def __init__(self):
@@ -31,21 +30,16 @@ class PicoSerialComm:
         
         # ROS Publishers
         self.status_pub = rospy.Publisher('/pico/status', String, queue_size=10)
-        self.feedback_pub = rospy.Publisher('/pico/feedback', String, queue_size=10)
         self.connection_pub = rospy.Publisher('/pico/connected', Bool, queue_size=1)
+        self.actual_rpm_pub = rospy.Publisher('/extruder/actual_rpm', Float32, queue_size=10)
+
+        # Minimal ROS API
+        self.run_sub = rospy.Subscriber('/extruder/run', Bool, self.run_callback)
+        self.rpm_sub = rospy.Subscriber('/extruder/target_rpm', Float32, self.rpm_callback)
         
-        # ROS Subscribers for different command types
-        self.injection_cmd_sub = rospy.Subscriber('/injection/command', String, self.injection_command_callback)
-        self.extruder_cmd_sub = rospy.Subscriber('/extruder/command', String, self.extruder_command_callback)
-        self.emergency_stop_sub = rospy.Subscriber('/emergency_stop', Bool, self.emergency_stop_callback)
-        self.velocity_cmd_sub = rospy.Subscriber('/injection/velocity', Twist, self.velocity_command_callback)
-        
-        # Injection molding specific parameters
-        self.injection_pressure = 0.0
-        self.injection_speed = 0.0
-        self.hold_pressure = 0.0
-        self.cooling_time = 0.0
-        self.cycle_count = 0
+        # Extruder control state
+        self.target_rpm = 0.0
+        self.is_running = False
         
         rospy.loginfo("Pico Serial Communication Node initialized")
         
@@ -167,15 +161,19 @@ class PicoSerialComm:
             self.status_pub.publish(String(json.dumps(message)))
             rospy.loginfo(f"Pico Status: {message.get('data', 'No data')}")
             
-        elif msg_type == 'feedback':
-            self.feedback_pub.publish(String(json.dumps(message)))
-            rospy.loginfo(f"Pico Feedback: {message.get('data', 'No data')}")
-            
         elif msg_type == 'error':
             rospy.logerr(f"Pico Error: {message.get('data', 'Unknown error')}")
             
         elif msg_type == 'handshake_ack':
             rospy.loginfo("Pi Pico 2W handshake acknowledged")
+        
+        elif msg_type == 'status':
+            data = message.get('data', {})
+            if 'actual_rpm' in data:
+                try:
+                    self.actual_rpm_pub.publish(Float32(float(data['actual_rpm'])))
+                except Exception:
+                    pass
             
         else:
             rospy.logwarn(f"Unknown message type from Pico: {msg_type}")
@@ -238,63 +236,20 @@ class PicoSerialComm:
         self.command_thread.daemon = True
         self.command_thread.start()
 
-    # ROS Callbacks for different command types
-    def injection_command_callback(self, msg):
-        """Handle injection molding commands"""
+    # Minimal ROS Callbacks
+    def run_callback(self, msg: Bool):
+        should_run = bool(msg.data)
+        self.is_running = should_run
+        self.send_command('RUN' if should_run else 'STOP', {}, priority=True)
+
+    def rpm_callback(self, msg: Float32):
         try:
-            command_data = json.loads(msg.data)
-            command_type = command_data.get('command', 'unknown')
-            
-            if command_type == 'start_injection':
-                self.injection_pressure = command_data.get('pressure', 0.0)
-                self.injection_speed = command_data.get('speed', 0.0)
-                self.send_command('INJECTION_START', command_data, priority=True)
-                
-            elif command_type == 'hold_pressure':
-                self.hold_pressure = command_data.get('pressure', 0.0)
-                self.send_command('HOLD_PRESSURE', command_data)
-                
-            elif command_type == 'cooling':
-                self.cooling_time = command_data.get('time', 0.0)
-                self.send_command('COOLING', command_data)
-                
-            elif command_type == 'eject':
-                self.send_command('EJECT', command_data, priority=True)
-                
-            elif command_type == 'cycle_complete':
-                self.cycle_count += 1
-                self.send_command('CYCLE_COMPLETE', {'cycle': self.cycle_count})
-                
-        except json.JSONDecodeError:
-            rospy.logerr("Invalid JSON in injection command")
-        except Exception as e:
-            rospy.logerr(f"Error processing injection command: {e}")
-
-    def extruder_command_callback(self, msg):
-        """Handle extruder commands"""
-        try:
-            command_data = json.loads(msg.data)
-            self.send_command('EXTRUDER_CMD', command_data)
-        except json.JSONDecodeError:
-            rospy.logerr("Invalid JSON in extruder command")
-        except Exception as e:
-            rospy.logerr(f"Error processing extruder command: {e}")
-
-    def emergency_stop_callback(self, msg):
-        """Handle emergency stop commands"""
-        if msg.data:
-            rospy.logwarn("EMERGENCY STOP ACTIVATED!")
-            self.send_command('EMERGENCY_STOP', {}, priority=True)
-
-    def velocity_command_callback(self, msg):
-        """Handle velocity commands for injection"""
-        velocity_data = {
-            'linear_x': msg.linear.x,
-            'linear_y': msg.linear.y,
-            'linear_z': msg.linear.z,
-            'angular_z': msg.angular.z
-        }
-        self.send_command('VELOCITY_CMD', velocity_data, priority=True)
+            rpm = float(msg.data)
+        except Exception:
+            rospy.logwarn("Invalid RPM value received")
+            return
+        self.target_rpm = rpm
+        self.send_command('SET_RPM', { 'rpm': rpm }, priority=False)
 
     def publish_connection_status(self, connected):
         """Publish connection status"""

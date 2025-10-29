@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Injection Molding Machine Launch File -->
+  
+  <!-- Temperature Sensor Nodes -->
+  <node name="extruder_zone1_temp_node" pkg="temperature_sensor_pkg" type="extruder_zone1_temp_node.py" output="screen"/>
+  <node name="extruder_zone2_temp_node" pkg="temperature_sensor_pkg" type="extruder_zone2_temp_node.py" output="screen"/>
+  
+  <!-- Heater Control Node -->
+  <node name="heater_control_node" pkg="heater_control_pkg" type="heater_control_node.py" output="screen"/>
+  
+  <!-- Pi Pico Communication Node -->
+  <node name="pico_serial_node" pkg="pico_comm_pkg" type="pico_serial_node.py" output="screen"/>
+  
+  <!-- Topic Watchdog -->
+  <node name="topic_watchdog" pkg="frankenmolder_utils" type="topic_watchdog.py" output="screen"/>
+  
+  <!-- GUI Node -->
+  <node name="extruder_gui_node" pkg="frankenmolder_gui" type="extruder_gui_node.py" output="screen"/>
+  
+</launch>

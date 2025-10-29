@@ -19,8 +19,8 @@
        sudo \
        && rm -rf /var/lib/apt/lists/*
 
-   # Install spidev via pip
-   RUN pip3 install spidev
+   # Install spidev and pyserial via pip
+   RUN pip3 install spidev pyserial
 
    # --- FIX: Create device groups if they don't exist and add root ---
    # Check if groups exist before adding, add root to them
@@ -29,11 +29,12 @@
     && groupadd --force dialout || true && usermod -aG dialout root
 
    # Create the source directory and copy local code (as root)
-   RUN mkdir -p /app/src/temperature_sensor_pkg /app/src/frankenmolder_gui /app/src/frankenmolder_utils /app/src/heater_control_pkg
+   RUN mkdir -p /app/src/temperature_sensor_pkg /app/src/frankenmolder_gui /app/src/frankenmolder_utils /app/src/heater_control_pkg /app/src/pico_comm_pkg
    COPY temperature_sensor_pkg /app/src/temperature_sensor_pkg
    COPY frankenmolder_gui /app/src/frankenmolder_gui
    COPY frankenmolder_utils /app/src/frankenmolder_utils
    COPY heater_control_pkg /app/src/heater_control_pkg
+   COPY pico_comm_pkg /app/src/pico_comm_pkg
 
    # --- Make Python nodes executable ---
    RUN chmod +x /app/src/frankenmolder_gui/src/extruder_gui_node.py
@@ -41,6 +42,7 @@
    RUN chmod +x /app/src/temperature_sensor_pkg/src/extruder_zone2_temp_node.py
    RUN chmod +x /app/src/heater_control_pkg/src/heater_control_node.py
    RUN chmod +x /app/src/frankenmolder_utils/src/topic_watchdog.py
+   RUN chmod +x /app/src/pico_comm_pkg/src/pico_serial_node.py
 
    # --- Copy start script ---
    COPY start_node.sh /app/start_node.sh
