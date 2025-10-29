@@ -6,33 +6,39 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-
+    
     # --- Networking & Hardware Access ---
-    network_mode: host
-    privileged: true # CRITICAL: MUST be true
-
-    # --- Run as Root (as per current Dockerfile) ---
-
+    network_mode: host 
+    privileged: true 
+    
     # --- X-FORWARDING SETUP ---
     environment:
-      - DISPLAY=:0
-      # ROS Networking Variables
+      # Hardcoded display for reliability after reboot
+      - DISPLAY=:0 
+      
+      # ROS Networking Variables (Use your PI_TAILSCALE_IP: 100.119.150.8)
       - ROS_MASTER_URI=http://100.119.150.8:11311
       - ROS_IP=100.119.150.8
-
+      
     volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ./pi_ros_logs:/data/ros_logs
-
+      # Mount the X11 Unix socket (Crucial for GUI)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw 
+      # Mount other necessary files (your logs)
+      - ./pi_ros_logs:/data/ros_logs 
+      
     devices:
+      # SPI Devices
       - /dev/spidev0.0:/dev/spidev0.0
       - /dev/spidev0.1:/dev/spidev0.1
-      - /dev/spidev0.2:/dev/spidev0.2 # Make sure this line exists
-      # Map gpiomem (Essential for RPi.GPIO)
+      - /dev/spidev0.2:/dev/spidev0.2
+      # GPIO Memory
       - /dev/gpiomem:/dev/gpiomem
-      # Map vchiq (optional GPU)
+      # (Optional, add /dev/vchiq if you need GPU acceleration)
       - /dev/vchiq
-
-    restart: always
+      # --- ADDED: Map the Pico's USB Serial Port ---
+      - /dev/ttyACM0:/dev/ttyACM0
+      
+    restart: always 
     command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/start_node.sh; sleep infinity"
+    # Send SIGINT for cleaner rosbag shutdown
     stop_signal: SIGINT
