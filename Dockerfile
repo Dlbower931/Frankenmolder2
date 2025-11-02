@@ -41,9 +41,9 @@ RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
 
 
 # --- STAGE 2: The Final, Small Image ---
-# We start from a minimal ROS image (ros-core)
-# --- FIX: Corrected image name (removed extra '-ros') ---
-FROM ros:noetic-core
+# We start from a minimal ROS image
+# --- FIX: Corrected image name to 'ros:noetic-ros-base' ---
+FROM ros:noetic-ros-base
 
 # Install ONLY the runtime dependencies (not the build tools)
 RUN apt-get update && apt-get install -y \
@@ -66,3 +66,4 @@ COPY start_node.sh /app/start_node.sh
 RUN chmod +x /app/start_node.sh
 
 # This final image is now much smaller!
+
