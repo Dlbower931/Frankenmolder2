@@ -14,7 +14,8 @@
 
   <!-- Dependencies for this node -->
   <depend>rospy</depend>
-  <depend>std_msgs</independ>
+  <!-- FIX: Corrected the closing tag from </independ> to </depend> -->
+  <depend>std_msgs</depend>
   
   <!-- We add can_msgs for debugging the raw CAN frames -->
   <depend>can_msgs</depend>
@@ -23,3 +24,4 @@
     <build_type>catkin</build_type>
   </export>
 </package>
+
