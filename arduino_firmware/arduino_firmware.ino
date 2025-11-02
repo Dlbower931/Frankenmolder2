@@ -21,7 +21,6 @@
 #include <ESP32-TWAI-CAN.hpp>
 #include <max6675.h> // Adafruit's library
 #include <PID_v1.h>  // The PID library
-#include <ESP32Servo.h> // ESP32 Servo library
 
 // --- Pin Definitions ---
 // CAN
@@ -85,7 +84,7 @@ PID* myPID[NUM_ZONES]; // Array of PID controller objects
 
 // State Machine Logic
 const float HYSTERESIS = 3.0; // User request: ~3 degrees
-const unsigned long PID_DROP_TIMEOUT_MS = 5000; // 5 seconds
+const unsigned long PID_DROP_TIMEOUT_MS = 15000; // 5 seconds
 unsigned long pidBelowBandStartTime[NUM_ZONES] = {0, 0, 0};
 
 // Timing
@@ -96,12 +95,21 @@ unsigned long prevStatusMillis = 0;
 unsigned long prevControlMillis = 0;
 unsigned long lastCanMessageTime = 0; // For watchdog
 
-// Servo Control
-ESP32Servo servo;
+// Servo Control (using ESP32 LEDC PWM)
+#define SERVO_PIN 22 // GPIO for 9g servo motor
+const int SERVO_PWM_CHANNEL = 3; // Use channel 3 for servo (0,1,2 are used for heaters)
+const int SERVO_PWM_FREQ = 50; // 50 Hz for standard servos
+const int SERVO_PWM_RESOLUTION = 16; // 16-bit resolution for fine control
+const int SERVO_PWM_MAX = 65535; // Max value for 16-bit
+// Servo pulse width: 500-2500 microseconds (0.5ms to 2.5ms) maps to 0-180 degrees
+const int SERVO_PULSE_MIN_US = 500;  // 0 degrees
+const int SERVO_PULSE_MAX_US = 2500; // 180 degrees
+const int SERVO_PULSE_CENTER_US = 1500; // 90 degrees (center)
+
 bool servoEnabled = false;
-int servoPosition = 90; // Start at center (0-180 degrees)
+float servoPosition = 90.0; // Start at center (0-180 degrees)
 int servoDirection = 1; // 1 = sweeping right, -1 = sweeping left
-float servoSweepSpeed = 1.0; // Degrees per update (default 1.0)
+float servoSweepSpeed = 5.0; // Degrees per update (default 5.0 - medium speed)
 const int SERVO_MIN_ANGLE = 0;
 const int SERVO_MAX_ANGLE = 180;
 const int SERVO_UPDATE_PERIOD_MS = 50; // Update servo position every 50ms
@@ -227,10 +235,11 @@ void checkCanMessages() {
                 if (cmdStr == "ON" || cmdStr == "on") {
                     servoEnabled = true;
                     Serial.println("Motor: Servo sweep ENABLED");
+                    Serial.printf("Motor: Current position: %.1f, Speed: %.2f deg/update\n", servoPosition, servoSweepSpeed);
                 } else if (cmdStr == "OFF" || cmdStr == "off") {
                     servoEnabled = false;
-                    servo.write(90); // Return to center position when stopped
-                    Serial.println("Motor: Servo sweep DISABLED");
+                    // Stop in place - don't change position
+                    Serial.printf("Motor: Servo sweep DISABLED (stopped at %.1f°)\n", servoPosition);
                 }
                 break;
             }
@@ -245,21 +254,26 @@ void checkCanMessages() {
                     String rpmStr = cmdStr.substring(3); // Extract number after "RPM"
                     float rpm = rpmStr.toFloat();
                     
+                    Serial.printf("Motor: Parsed RPM string '%s' -> value: %.2f\n", rpmStr.c_str(), rpm);
+                    
                     // Convert RPM to sweep speed (degrees per update)
                     // For a full sweep (180 degrees), we want to complete it in some reasonable time
                     // RPM of 1 = slow, RPM of 10 = fast
                     // Map RPM to degrees per update (higher RPM = faster sweep)
-                    // Scale: RPM 1.0 -> 0.1 deg/update, RPM 10.0 -> 2.0 deg/update
+                    // Scale: RPM 1.0 -> 2.0 deg/update, RPM 10.0 -> 20.0 deg/update (much faster)
                     if (rpm < 1.0) {
-                        servoSweepSpeed = 0.1;
-                    } else if (rpm > 10.0) {
                         servoSweepSpeed = 2.0;
+                    } else if (rpm > 10.0) {
+                        servoSweepSpeed = 20.0;
                     } else {
-                        // Linear mapping: (rpm - 1.0) / (10.0 - 1.0) * (2.0 - 0.1) + 0.1
-                        servoSweepSpeed = ((rpm - 1.0) / 9.0) * 1.9 + 0.1;
+                        // Linear mapping: (rpm - 1.0) / (10.0 - 1.0) * (20.0 - 2.0) + 2.0
+                        servoSweepSpeed = ((rpm - 1.0) / 9.0) * 18.0 + 2.0;
                     }
                     
-                    Serial.printf("Motor: RPM set to %.1f, sweep speed: %.2f deg/update\n", rpm, servoSweepSpeed);
+                    Serial.printf("Motor: RPM set to %.1f, sweep speed: %.2f deg/update (updates every %dms = %.2f deg/sec)\n", 
+                                  rpm, servoSweepSpeed, SERVO_UPDATE_PERIOD_MS, servoSweepSpeed * (1000.0 / SERVO_UPDATE_PERIOD_MS));
+                } else {
+                    Serial.printf("Motor: RPM command '%s' doesn't start with 'RPM'\n", cmdStr.c_str());
                 }
                 break;
             }
@@ -376,6 +390,25 @@ void checkCanWatchdog() {
     }
 }
 
+void setServoPosition(float angle) {
+    // Clamp angle to valid range
+    if (angle < SERVO_MIN_ANGLE) angle = SERVO_MIN_ANGLE;
+    if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
+    
+    // Convert angle (0-180) to pulse width in microseconds (500-2500)
+    float pulseWidthUs = SERVO_PULSE_MIN_US + (angle / 180.0) * (SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US);
+    
+    // Convert microseconds to duty cycle value
+    // For 50Hz (20ms period), duty cycle = pulseWidthUs / 20000
+    float dutyCycle = pulseWidthUs / 20000.0;
+    
+    // Convert to PWM value (0 to SERVO_PWM_MAX)
+    uint32_t pwmValue = (uint32_t)(dutyCycle * SERVO_PWM_MAX);
+    
+    // Write to PWM channel (ESP32 Core 3.x uses ledcWriteChannel)
+    ledcWriteChannel(SERVO_PWM_CHANNEL, pwmValue);
+}
+
 void updateServoSweep() {
     if (!servoEnabled) {
         return; // Servo is disabled, don't update
@@ -388,13 +421,23 @@ void updateServoSweep() {
     if (servoPosition >= SERVO_MAX_ANGLE) {
         servoPosition = SERVO_MAX_ANGLE;
         servoDirection = -1; // Reverse direction
+        Serial.printf("Motor: Servo at max (180°), reversing direction\n");
     } else if (servoPosition <= SERVO_MIN_ANGLE) {
         servoPosition = SERVO_MIN_ANGLE;
         servoDirection = 1; // Reverse direction
+        Serial.printf("Motor: Servo at min (0°), reversing direction\n");
     }
     
     // Write new position to servo
-    servo.write((int)servoPosition);
+    setServoPosition(servoPosition);
+    
+    // Debug output every 20 updates (about once per second)
+    static int debugCounter = 0;
+    if (++debugCounter >= 20) {
+        debugCounter = 0;
+        Serial.printf("Motor: Servo position: %.1f°, direction: %d, speed: %.2f deg/update\n", 
+                      servoPosition, servoDirection, servoSweepSpeed);
+    }
 }
 
 void sendAllStatus() {
@@ -454,10 +497,24 @@ void setup() {
     }
     Serial.println("PID controllers initialized.");
 
-    // 4. Initialize Servo
-    servo.attach(SERVO_PIN);
-    servo.write(90); // Start at center position
-    Serial.println("Servo initialized on pin 22 (center position).");
+    // 4. Initialize Servo (using ESP32 LEDC PWM)
+    if (ledcAttachChannel(SERVO_PIN, SERVO_PWM_FREQ, SERVO_PWM_RESOLUTION, SERVO_PWM_CHANNEL)) {
+        setServoPosition(90.0); // Start at center position
+        Serial.println("Servo initialized on pin 22 (center position).");
+        
+        // Test servo by moving to extremes
+        Serial.println("Servo test: Moving to 0°...");
+        setServoPosition(0.0);
+        delay(1000);
+        Serial.println("Servo test: Moving to 180°...");
+        setServoPosition(180.0);
+        delay(1000);
+        Serial.println("Servo test: Returning to center...");
+        setServoPosition(90.0);
+        delay(500);
+    } else {
+        Serial.println("ERROR: Failed to attach servo PWM channel!");
+    }
 
     // 5. Initialize Sensors
     delay(500); // Wait for sensors to stabilize

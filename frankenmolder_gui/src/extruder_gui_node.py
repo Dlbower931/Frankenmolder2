@@ -23,6 +23,118 @@ latest_motor_state = "STOPPED" # Shared state for the motor
 
 # Lock to prevent race conditions when accessing shared data
 data_lock = Lock()
+
+class NumberPadPopup:
+    """Custom number pad popup for touchscreen-friendly numeric input."""
+    def __init__(self, parent, entry_widget, entry_var, min_val=None, max_val=None, callback=None):
+        self.parent = parent
+        self.entry_widget = entry_widget
+        self.entry_var = entry_var
+        self.min_val = min_val
+        self.max_val = max_val
+        self.callback = callback
+        
+        # Create popup window
+        self.popup = tk.Toplevel(parent)
+        self.popup.title("Enter Number")
+        self.popup.attributes('-topmost', True)  # Keep on top
+        self.popup.transient(parent)  # Remove minimize/maximize buttons
+        
+        # Get position relative to entry widget
+        entry_widget.update_idletasks()
+        x = entry_widget.winfo_rootx()
+        y = entry_widget.winfo_rooty() + entry_widget.winfo_height()
+        self.popup.geometry(f"+{x}+{y}")
+        
+        # Current input string
+        self.input_str = tk.StringVar(value=entry_var.get() if hasattr(entry_var, 'get') else "")
+        
+        # Display field
+        display_frame = tk.Frame(self.popup, bg="white", bd=2, relief=tk.SUNKEN)
+        display_frame.pack(padx=10, pady=10, fill=tk.X)
+        self.display_label = tk.Label(display_frame, textvariable=self.input_str, 
+                                      font=("Arial", 24, "bold"), bg="white", 
+                                      anchor="e", padx=10, pady=5)
+        self.display_label.pack(fill=tk.X)
+        
+        # Number pad buttons
+        button_frame = tk.Frame(self.popup)
+        button_frame.pack(padx=10, pady=10)
+        
+        # Button layout
+        buttons = [
+            ['7', '8', '9', 'C'],
+            ['4', '5', '6', '⌫'],
+            ['1', '2', '3', '.'],
+            ['-', '0', '+', 'OK']
+        ]
+        
+        for i, row in enumerate(buttons):
+            for j, btn_text in enumerate(row):
+                btn = tk.Button(button_frame, text=btn_text, font=("Arial", 20, "bold"),
+                               width=4, height=2, command=lambda t=btn_text: self.button_click(t))
+                btn.grid(row=i, column=j, padx=2, pady=2, sticky="nsew")
+                button_frame.grid_columnconfigure(j, weight=1)
+            button_frame.grid_rowconfigure(i, weight=1)
+        
+        # Handle window close
+        self.popup.protocol("WM_DELETE_WINDOW", self.cancel)
+        
+        # Focus the popup
+        self.popup.focus_set()
+        
+    def button_click(self, char):
+        current = self.input_str.get()
+        
+        if char == 'C':  # Clear
+            self.input_str.set("")
+        elif char == '⌫':  # Backspace
+            self.input_str.set(current[:-1] if current else "")
+        elif char == 'OK':  # Confirm
+            self.confirm()
+        elif char == '.':
+            if '.' not in current:
+                self.input_str.set(current + char)
+        elif char == '-':
+            if current.startswith('-'):
+                self.input_str.set(current[1:])
+            else:
+                self.input_str.set('-' + current)
+        elif char == '+':
+            if current.startswith('-'):
+                self.input_str.set(current[1:])
+        else:  # Number
+            self.input_str.set(current + char)
+    
+    def confirm(self):
+        try:
+            value_str = self.input_str.get()
+            if not value_str or value_str == '-':
+                value_str = "0"
+            
+            value = float(value_str)
+            
+            # Validate range if specified
+            if self.min_val is not None and value < self.min_val:
+                value = self.min_val
+            if self.max_val is not None and value > self.max_val:
+                value = self.max_val
+            
+            # Update the entry variable
+            self.entry_var.set(value)
+            
+            # Call callback if provided
+            if self.callback:
+                self.callback(value)
+            
+            self.popup.destroy()
+            
+        except ValueError:
+            # Invalid input, just close
+            self.popup.destroy()
+    
+    def cancel(self):
+        self.popup.destroy()
 class ExtruderGUI(tk.Frame):
     """Main application class that holds the tabbed notebook."""
     def __init__(self, master):
@@ -213,6 +325,9 @@ class HeaterControlFrame(tk.Frame):
             tk.Label(zone_frame, text="Setpoint (°C):", font=("Arial", 12)).grid(row=2, column=0, columnspan=4, pady=(10, 0), sticky="w")
             entry = tk.Entry(zone_frame, textvariable=self.target_setpoints[zone_id], width=10, font=("Arial", 16))
             entry.grid(row=3, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
+            # Bind click to open number pad
+            entry.bind('<Button-1>', lambda e, zid=zone_id: self.open_number_pad(zid, entry))
+            entry.bind('<FocusIn>', lambda e, zid=zone_id: self.open_number_pad(zid, entry))
             set_button = tk.Button(zone_frame, text="Set Target", font=("Arial", 14, "bold"), width=15,
                                    command=lambda zid=zone_id: self.publish_setpoint(zid))
             set_button.grid(row=4, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
@@ -255,6 +370,16 @@ class HeaterControlFrame(tk.Frame):
                     elif mode == "PID": mode_label.config(fg="green")
                     else: mode_label.config(fg="black") # Default/Unknown
 
+    def open_number_pad(self, zone_id, entry_widget):
+        """Open number pad popup for setpoint entry."""
+        NumberPadPopup(
+            self.main_app.master,
+            entry_widget,
+            self.target_setpoints[zone_id],
+            min_val=MIN_SETPOINT,
+            max_val=MAX_SETPOINT
+        )
+    
     def publish_setpoint(self, zone_id):
         """Validate and publish the setpoint."""
         pub = self.main_app.publishers.get(f"{zone_id}_setpoint")
@@ -320,6 +445,9 @@ class MotorControlFrame(tk.Frame):
         tk.Label(control_frame, text="Target RPM:", font=("Arial", 14)).grid(row=1, column=0, padx=10, pady=10, sticky="w")
         rpm_entry = tk.Entry(control_frame, textvariable=self.target_rpm, width=10, font=("Arial", 18))
         rpm_entry.grid(row=1, column=1, padx=10, pady=10, ipady=8)
+        # Bind click to open number pad
+        rpm_entry.bind('<Button-1>', lambda e: self.open_number_pad_rpm(rpm_entry))
+        rpm_entry.bind('<FocusIn>', lambda e: self.open_number_pad_rpm(rpm_entry))
         rpm_button = tk.Button(control_frame, text="Set RPM", font=("Arial", 14, "bold"),
                                command=self.publish_set_rpm)
         rpm_button.grid(row=1, column=2, padx=10, pady=10, ipady=8)
@@ -352,6 +480,16 @@ class MotorControlFrame(tk.Frame):
             else:
                 self.state_label.config(fg="black")
 
+    def open_number_pad_rpm(self, entry_widget):
+        """Open number pad popup for RPM entry."""
+        NumberPadPopup(
+            self.main_app.master,
+            entry_widget,
+            self.target_rpm,
+            min_val=0.0,
+            max_val=100.0  # Reasonable max for RPM
+        )
+    
     def publish_set_rpm(self):
         """Validate and publish the target RPM."""
         pub = self.main_app.publishers.get("motor_set_rpm")
@@ -365,7 +503,8 @@ class MotorControlFrame(tk.Frame):
             if rpm_value < 0:
                 raise ValueError("RPM cannot be negative.")
             
-            msg = Float32(rpm_value)
+            msg = Float32()
+            msg.data = float(rpm_value)
             pub.publish(msg)
             rospy.loginfo(f"GUI published motor_set_rpm: {rpm_value}")
             self.main_app.message_var.set(f"Motor RPM target {rpm_value} sent.")
