@@ -2,22 +2,24 @@
 <package format="2">
   <name>can_bridge_pkg</name>
   <version>0.0.1</version>
-  <description>The package to bridge ROS topics with the CAN bus.</description>
+  <description>
+    This package provides a ROS node to bridge communication
+    between the ROS network and the ESP32 CAN bus controller.
+  </description>
 
   <maintainer email="user@todo.todo">Your Name</maintainer>
   <license>TODO</license>
 
   <buildtool_depend>catkin</buildtool_depend>
 
+  <!-- Dependencies for this node -->
   <depend>rospy</depend>
-  <depend>std_msgs</depend>
+  <depend>std_msgs</independ>
+  
+  <!-- We add can_msgs for debugging the raw CAN frames -->
   <depend>can_msgs</depend>
-
-  <!-- Add python-can as a system dependency -->
-  <exec_depend>python3-can</exec_depend>
 
   <export>
     <build_type>catkin</build_type>
   </export>
 </package>
-

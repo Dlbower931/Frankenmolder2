@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(can_bridge_pkg)
 
-# Find necessary ROS packages (rospy for python, std_msgs for common messages)
+# Find necessary ROS packages (must match package.xml)
 find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
@@ -15,8 +15,9 @@ catkin_package()
 # This command tells the build system to copy your Python script
 # into the final 'install' directory (under lib/package_name/)
 # so that 'rosrun' can find and execute it.
+# We assume the script will be named 'can_bridge_node.py'
+# and will be in the 'src/' folder.
 install(PROGRAMS
   src/can_bridge_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
-
