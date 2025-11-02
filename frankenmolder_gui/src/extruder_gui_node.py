@@ -46,13 +46,7 @@ class NumberPadPopup:
         popup_width = 410
         popup_height = 500
         
-        # Center popup on screen
-        self.popup.update_idletasks()
-        screen_width = self.popup.winfo_screenwidth()
-        screen_height = self.popup.winfo_screenheight()
-        x = (screen_width // 2) - (popup_width // 2)
-        y = (screen_height // 2) - (popup_height // 2)
-        self.popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
+        # Don't set geometry yet - wait until widgets are created
         
         # Current input string - get initial value from entry variable
         initial_val = ""
@@ -95,6 +89,14 @@ class NumberPadPopup:
         
         # Handle window close
         self.popup.protocol("WM_DELETE_WINDOW", self.cancel)
+        
+        # Now center popup on screen after all widgets are created
+        self.popup.update_idletasks()
+        screen_width = self.popup.winfo_screenwidth()
+        screen_height = self.popup.winfo_screenheight()
+        x = (screen_width // 2) - (popup_width // 2)
+        y = (screen_height // 2) - (popup_height // 2)
+        self.popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
         
         # Focus the popup
         self.popup.focus_set()
@@ -367,7 +369,7 @@ class HeaterControlFrame(tk.Frame):
                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "OFF"))
             off_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
-            start_button = tk.Button(button_frame, text="START", bg="blue", fg="white", font=("Arial", 12, "bold"), height=2,
+            start_button = tk.Button(button_frame, text="START", bg="#00008B", fg="white", font=("Arial", 12, "bold"), height=2,
                                      command=lambda zid=zone_id: self.publish_state_cmd(zid, "ON"))
             start_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
