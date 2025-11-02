@@ -30,8 +30,8 @@ CAN_ID_STATUS_TEMP_3 = 0x103
 CAN_ID_STATUS_STATE_1 = 0x111
 CAN_ID_STATUS_STATE_2 = 0x112
 CAN_ID_STATUS_STATE_3 = 0x113
-# (Motor status... add later)
-# CAN_ID_STATUS_MOTOR_STATE = 0x120
+# (string) Motor Actual State "ON", "OFF"
+CAN_ID_STATUS_MOTOR_STATE = 0x120
 # CAN_ID_STATUS_MOTOR_RPM = 0x121
 
 # --- Pi -> ESP32 (Commands) ---
@@ -282,7 +282,14 @@ class CANBridgeNode:
                     except Exception as e:
                         rospy.logwarn(f"CAN->ROS ({zone_name}): Error decoding string: {e}")
                 
-                # (Handle motor status, etc. here)
+                # --- Handle Motor State Status Messages ---
+                elif message.arbitration_id == CAN_ID_STATUS_MOTOR_STATE:
+                    try:
+                        state_str = message.data.decode('utf-8').strip('\x00')
+                        rospy.loginfo(f"CAN->ROS (Motor State): {state_str}")
+                        self.motor_state_pub.publish(String(state_str))
+                    except Exception as e:
+                        rospy.logwarn(f"CAN->ROS (Motor State): Error decoding string: {e}")
 
         except rospy.ROSInterruptException:
             pass

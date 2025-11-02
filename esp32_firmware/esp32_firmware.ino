@@ -56,7 +56,7 @@ const int PWM_MAX_DUTY = 255; // Max duty cycle
 #define CAN_ID_STATUS_STATE_1  0x111 // (string) "OFF", "HEAT", "PID"
 #define CAN_ID_STATUS_STATE_2  0x112 // (string)
 #define CAN_ID_STATUS_STATE_3  0x113 // (string)
-// (Motor status... add later)
+#define CAN_ID_STATUS_MOTOR_STATE 0x120 // (string) "ON", "OFF"
 
 // Pi -> ESP32 (Commands)
 #define CAN_ID_CMD_SETPOINT_1  0x201 // (float) Setpoint Zone 1
@@ -451,6 +451,11 @@ void sendAllStatus() {
         sendCanString(CAN_ID_STATUS_STATE_1 + i, zoneState[i]);
         Serial.printf("Z%d State: %s | ", i+1, zoneState[i].c_str());
     }
+    
+    // Send Motor State
+    String motorStateStr = servoEnabled ? "ON" : "OFF";
+    sendCanString(CAN_ID_STATUS_MOTOR_STATE, motorStateStr);
+    Serial.printf("Motor: %s", motorStateStr.c_str());
     Serial.println();
 }
 
