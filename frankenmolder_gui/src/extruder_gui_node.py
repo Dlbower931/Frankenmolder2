@@ -26,13 +26,15 @@ data_lock = Lock()
 
 class NumberPadPopup:
     """Custom number pad popup for touchscreen-friendly numeric input."""
-    def __init__(self, parent, entry_widget, entry_var, min_val=None, max_val=None, callback=None):
+    def __init__(self, parent, entry_widget, entry_var, min_val=None, max_val=None, callback=None, confirm_text="OK", on_confirm=None):
         self.parent = parent
         self.entry_widget = entry_widget
         self.entry_var = entry_var
         self.min_val = min_val
         self.max_val = max_val
         self.callback = callback
+        self.on_confirm = on_confirm  # Additional callback when OK/Set Target is pressed
+        self.confirm_text = confirm_text  # Text for confirm button
         
         # Create popup window
         self.popup = tk.Toplevel(parent)
@@ -40,11 +42,15 @@ class NumberPadPopup:
         self.popup.attributes('-topmost', True)  # Keep on top
         self.popup.transient(parent)  # Remove minimize/maximize buttons
         
-        # Get position relative to entry widget
-        entry_widget.update_idletasks()
-        x = entry_widget.winfo_rootx()
-        y = entry_widget.winfo_rooty() + entry_widget.winfo_height()
-        self.popup.geometry(f"+{x}+{y}")
+        # Center popup on screen
+        self.popup.update_idletasks()
+        screen_width = self.popup.winfo_screenwidth()
+        screen_height = self.popup.winfo_screenheight()
+        popup_width = self.popup.winfo_reqwidth()
+        popup_height = self.popup.winfo_reqheight()
+        x = (screen_width // 2) - (popup_width // 2)
+        y = (screen_height // 2) - (popup_height // 2)
+        self.popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
         
         # Current input string - get initial value from entry variable
         initial_val = ""
@@ -73,7 +79,7 @@ class NumberPadPopup:
             ['7', '8', '9', 'C'],
             ['4', '5', '6', '⌫'],
             ['1', '2', '3', '.'],
-            ['-', '0', '+', 'OK']
+            ['-', '0', '+', self.confirm_text]
         ]
         
         for i, row in enumerate(buttons):
@@ -97,7 +103,7 @@ class NumberPadPopup:
             self.input_str.set("")
         elif char == '⌫':  # Backspace
             self.input_str.set(current[:-1] if current else "")
-        elif char == 'OK':  # Confirm
+        elif char == self.confirm_text:  # Confirm (OK or Set Target)
             self.confirm()
         elif char == '.':
             if '.' not in current:
@@ -136,6 +142,10 @@ class NumberPadPopup:
             # Call callback if provided
             if self.callback:
                 self.callback(value)
+            
+            # Call on_confirm callback if provided (e.g., publish setpoint immediately)
+            if self.on_confirm:
+                self.on_confirm(value)
             
             self.popup.destroy()
             
@@ -343,9 +353,7 @@ class HeaterControlFrame(tk.Frame):
             self.setpoint_buttons[zone_id] = setpoint_btn
             # Format the button text to show value with decimal
             self.update_setpoint_button_text(zone_id)
-            set_button = tk.Button(zone_frame, text="Set Target", font=("Arial", 14, "bold"), width=15,
-                                   command=lambda zid=zone_id: self.publish_setpoint(zid))
-            set_button.grid(row=4, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
+            # Removed "Set Target" button - it's now in the number pad popup
 
             # State Control Buttons (Stacked OFF/START)
             tk.Label(zone_frame, text="Commands:", font=("Arial", 12)).grid(row=5, column=0, columnspan=4, pady=(15, 0), sticky="w")
@@ -401,7 +409,9 @@ class HeaterControlFrame(tk.Frame):
             self.target_setpoints[zone_id],
             min_val=MIN_SETPOINT,
             max_val=MAX_SETPOINT,
-            callback=lambda v: self.update_setpoint_button_text(zone_id)
+            confirm_text="Set Target",
+            callback=lambda v: self.update_setpoint_button_text(zone_id),
+            on_confirm=lambda v: self.publish_setpoint(zone_id)  # Auto-publish when Set Target is pressed
         )
     
     def publish_setpoint(self, zone_id):
@@ -585,11 +595,8 @@ def main():
         # Create the Tkinter root window
         root = tk.Tk()
         
-        # --- REMOVED Fullscreen attribute ---
-        # root.attributes('-fullscreen', True) 
-        
-        # Optional: Set a good default size for your 7" display (e.g., 800x480)
-        # root.geometry("800x480") 
+        # Auto-open in fullscreen
+        root.attributes('-fullscreen', True) 
         
         app = ExtruderGUI(root)
         
