@@ -267,9 +267,11 @@ class HeaterControlFrame(tk.Frame):
             if not (MIN_SETPOINT <= setpoint_value <= MAX_SETPOINT):
                 raise ValueError(f"Setpoint must be between {MIN_SETPOINT} and {MAX_SETPOINT}°C.")
 
-            msg = Float32(setpoint_value)
+            # Explicitly create Float32 message and set data field
+            msg = Float32()
+            msg.data = float(setpoint_value)
             pub.publish(msg)
-            rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value}")
+            rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value} (msg.data={msg.data})")
             self.main_app.message_var.set(f"{zone_id}: Setpoint {setpoint_value:.1f}°C accepted.")
             
             # --- Removed automatic HEATING command ---

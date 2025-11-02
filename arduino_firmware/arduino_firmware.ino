@@ -149,15 +149,28 @@ void checkCanMessages() {
         switch (rxFrame.identifier) {
             // --- Setpoint Commands ---
             case CAN_ID_CMD_SETPOINT_1:
-                if (rxFrame.data_length_code == 4) memcpy(&targetSetpoint[0], rxFrame.data, 4);
+                if (rxFrame.data_length_code == 4) {
+                    // Debug: print raw bytes received
+                    Serial.printf("RX: Setpoint Zone 1 bytes: %02X %02X %02X %02X\n", 
+                                  rxFrame.data[0], rxFrame.data[1], rxFrame.data[2], rxFrame.data[3]);
+                    memcpy(&targetSetpoint[0], rxFrame.data, 4);
+                }
                 Serial.printf("RX: Setpoint Zone 1 = %.1f\n", targetSetpoint[0]);
                 break;
             case CAN_ID_CMD_SETPOINT_2:
-                if (rxFrame.data_length_code == 4) memcpy(&targetSetpoint[1], rxFrame.data, 4);
+                if (rxFrame.data_length_code == 4) {
+                    Serial.printf("RX: Setpoint Zone 2 bytes: %02X %02X %02X %02X\n", 
+                                  rxFrame.data[0], rxFrame.data[1], rxFrame.data[2], rxFrame.data[3]);
+                    memcpy(&targetSetpoint[1], rxFrame.data, 4);
+                }
                 Serial.printf("RX: Setpoint Zone 2 = %.1f\n", targetSetpoint[1]);
                 break;
             case CAN_ID_CMD_SETPOINT_3:
-                if (rxFrame.data_length_code == 4) memcpy(&targetSetpoint[2], rxFrame.data, 4);
+                if (rxFrame.data_length_code == 4) {
+                    Serial.printf("RX: Setpoint Zone 3 bytes: %02X %02X %02X %02X\n", 
+                                  rxFrame.data[0], rxFrame.data[1], rxFrame.data[2], rxFrame.data[3]);
+                    memcpy(&targetSetpoint[2], rxFrame.data, 4);
+                }
                 Serial.printf("RX: Setpoint Zone 3 = %.1f\n", targetSetpoint[2]);
                 break;
 

@@ -170,8 +170,10 @@ class CANBridgeNode:
     def ros_heater_setpoint_callback(self, msg, zone_id):
         can_id = self.setpoint_can_ids.get(zone_id)
         if can_id is not None:
-            rospy.loginfo(f"ROS->CAN: Received {zone_id} setpoint: {msg.data}, sending to ID 0x{can_id:X}")
-            self.send_can_float(can_id, msg.data)
+            # Ensure we extract the float value correctly from Float32 message
+            setpoint_value = float(msg.data)
+            rospy.loginfo(f"ROS->CAN: Received {zone_id} setpoint: {setpoint_value}, sending to ID 0x{can_id:X}")
+            self.send_can_float(can_id, setpoint_value)
         else:
             rospy.logwarn(f"ROS->CAN: No CAN ID defined for setpoint on {zone_id}")
 
@@ -210,7 +212,12 @@ class CANBridgeNode:
     def send_can_float(self, can_id, value):
         if not self.bus: return
         try:
-            data_bytes = struct.pack('<f', value)
+            # Pack as little-endian 32-bit float
+            data_bytes = struct.pack('<f', float(value))
+            # Debug: show raw bytes being sent
+            byte_str = ' '.join([f'{b:02X}' for b in data_bytes])
+            rospy.loginfo(f"CAN TX (ID 0x{can_id:X}): Packing float {value:.2f} as bytes: {byte_str}")
+            
             msg = can.Message(arbitration_id=can_id,
                               data=data_bytes,
                               dlc=4,
@@ -219,6 +226,7 @@ class CANBridgeNode:
             rospy.loginfo(f"CAN TX (ID 0x{can_id:X}): Sent float {value:.2f}")
         except Exception as e:
             rospy.logerr(f"CAN TX (ID 0x{can_id:X}): Failed to send float: {e}")
+            rospy.logerr(f"  Value was: {value}, Type: {type(value)}")
 
     # --- CAN -> ROS Listener Loop ---
             
