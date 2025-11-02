@@ -1,7 +1,8 @@
 # --- STAGE 1: The Builder ---
 # This stage builds all your ROS packages.
 # We start from a full ROS image that has all the build tools.
-FROM ros:noetic-ros-desktop AS builder
+# --- FIX: Corrected image name (removed extra '-ros') ---
+FROM ros:noetic-desktop AS builder
 
 # Install system dependencies for your packages
 # We need can-utils (for host tools) and python3-can (for the python script)
@@ -41,7 +42,8 @@ RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
 
 # --- STAGE 2: The Final, Small Image ---
 # We start from a minimal ROS image (ros-core)
-FROM ros:noetic-ros-core
+# --- FIX: Corrected image name (removed extra '-ros') ---
+FROM ros:noetic-core
 
 # Install ONLY the runtime dependencies (not the build tools)
 RUN apt-get update && apt-get install -y \
