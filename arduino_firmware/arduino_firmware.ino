@@ -21,6 +21,7 @@
 #include <ESP32-TWAI-CAN.hpp>
 #include <max6675.h> // Adafruit's library
 #include <PID_v1.h>  // The PID library
+#include <ESP32Servo.h> // ESP32 Servo library
 
 // --- Pin Definitions ---
 // CAN
@@ -45,6 +46,8 @@ const int heaterPWMChannels[3] = {HEATER_PWM_CHAN_1, HEATER_PWM_CHAN_2, HEATER_P
 const int PWM_FREQ = 5000; // 5 kHz PWM frequency for SSRs
 const int PWM_RESOLUTION = 8; // 8-bit resolution (0-255)
 const int PWM_MAX_DUTY = 255; // Max duty cycle
+// Servo Control
+#define SERVO_PIN 22 // GPIO for 9g servo motor
 
 // --- CAN ID Protocol (Must match Pi's can_bridge_node.py) ---
 // ESP32 -> Pi (Status/Data)
@@ -92,6 +95,17 @@ const unsigned long CAN_WATCHDOG_TIMEOUT_MS = 5000; // 5 seconds
 unsigned long prevStatusMillis = 0;
 unsigned long prevControlMillis = 0;
 unsigned long lastCanMessageTime = 0; // For watchdog
+
+// Servo Control
+ESP32Servo servo;
+bool servoEnabled = false;
+int servoPosition = 90; // Start at center (0-180 degrees)
+int servoDirection = 1; // 1 = sweeping right, -1 = sweeping left
+float servoSweepSpeed = 1.0; // Degrees per update (default 1.0)
+const int SERVO_MIN_ANGLE = 0;
+const int SERVO_MAX_ANGLE = 180;
+const int SERVO_UPDATE_PERIOD_MS = 50; // Update servo position every 50ms
+unsigned long prevServoMillis = 0;
 
 // Sensor Instances
 MAX6675 thermocouple1(SCK_PIN, CS1_PIN, SO_PIN);
@@ -203,21 +217,50 @@ void checkCanMessages() {
                 break;
             }
 
-            // --- Motor Commands (Stubs) ---
+            // --- Motor Commands ---
             case CAN_ID_CMD_MOTOR_STATE: {
                 char data[9] = {0};
                 memcpy(data, rxFrame.data, rxFrame.data_length_code);
                 String cmdStr(data);
                 Serial.printf("RX: Motor Command: %s\n", cmdStr.c_str());
-                // Add motor logic here
+                
+                if (cmdStr == "ON" || cmdStr == "on") {
+                    servoEnabled = true;
+                    Serial.println("Motor: Servo sweep ENABLED");
+                } else if (cmdStr == "OFF" || cmdStr == "off") {
+                    servoEnabled = false;
+                    servo.write(90); // Return to center position when stopped
+                    Serial.println("Motor: Servo sweep DISABLED");
+                }
                 break;
             }
             case CAN_ID_CMD_MOTOR_RPM: {
-                 char data[9] = {0};
+                char data[9] = {0};
                 memcpy(data, rxFrame.data, rxFrame.data_length_code);
                 String cmdStr(data);
                 Serial.printf("RX: Motor RPM Command: %s\n", cmdStr.c_str());
-                // Add motor logic here
+                
+                // Parse "RPMxx.x" format
+                if (cmdStr.startsWith("RPM") || cmdStr.startsWith("rpm")) {
+                    String rpmStr = cmdStr.substring(3); // Extract number after "RPM"
+                    float rpm = rpmStr.toFloat();
+                    
+                    // Convert RPM to sweep speed (degrees per update)
+                    // For a full sweep (180 degrees), we want to complete it in some reasonable time
+                    // RPM of 1 = slow, RPM of 10 = fast
+                    // Map RPM to degrees per update (higher RPM = faster sweep)
+                    // Scale: RPM 1.0 -> 0.1 deg/update, RPM 10.0 -> 2.0 deg/update
+                    if (rpm < 1.0) {
+                        servoSweepSpeed = 0.1;
+                    } else if (rpm > 10.0) {
+                        servoSweepSpeed = 2.0;
+                    } else {
+                        // Linear mapping: (rpm - 1.0) / (10.0 - 1.0) * (2.0 - 0.1) + 0.1
+                        servoSweepSpeed = ((rpm - 1.0) / 9.0) * 1.9 + 0.1;
+                    }
+                    
+                    Serial.printf("Motor: RPM set to %.1f, sweep speed: %.2f deg/update\n", rpm, servoSweepSpeed);
+                }
                 break;
             }
             
@@ -333,6 +376,27 @@ void checkCanWatchdog() {
     }
 }
 
+void updateServoSweep() {
+    if (!servoEnabled) {
+        return; // Servo is disabled, don't update
+    }
+
+    // Update servo position based on direction and speed
+    servoPosition += (servoDirection * servoSweepSpeed);
+    
+    // Check boundaries and reverse direction
+    if (servoPosition >= SERVO_MAX_ANGLE) {
+        servoPosition = SERVO_MAX_ANGLE;
+        servoDirection = -1; // Reverse direction
+    } else if (servoPosition <= SERVO_MIN_ANGLE) {
+        servoPosition = SERVO_MIN_ANGLE;
+        servoDirection = 1; // Reverse direction
+    }
+    
+    // Write new position to servo
+    servo.write((int)servoPosition);
+}
+
 void sendAllStatus() {
     Serial.print("CAN TX: ");
     for (int i = 0; i < NUM_ZONES; i++) {
@@ -390,7 +454,12 @@ void setup() {
     }
     Serial.println("PID controllers initialized.");
 
-    // 4. Initialize Sensors
+    // 4. Initialize Servo
+    servo.attach(SERVO_PIN);
+    servo.write(90); // Start at center position
+    Serial.println("Servo initialized on pin 22 (center position).");
+
+    // 5. Initialize Sensors
     delay(500); // Wait for sensors to stabilize
     readAllSensors();
     Serial.println("Initialization complete.");
@@ -414,7 +483,13 @@ void loop() {
         runControlLogic();
     }
 
-    // 5. Send status reports periodically
+    // 5. Update servo sweep periodically
+    if (currentMillis - prevServoMillis >= SERVO_UPDATE_PERIOD_MS) {
+        prevServoMillis = currentMillis;
+        updateServoSweep();
+    }
+
+    // 6. Send status reports periodically
     if (currentMillis - prevStatusMillis >= STATUS_REPORT_PERIOD_MS) {
         prevStatusMillis = currentMillis;
         sendAllStatus();
