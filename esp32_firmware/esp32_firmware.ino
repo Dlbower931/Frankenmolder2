@@ -378,13 +378,18 @@ void runControlLogic() {
 void checkCanWatchdog() {
     if (millis() - lastCanMessageTime > 5) {
         // CAN connection lost!
-        Serial.println("CRITICAL ERROR: CAN Watchdog Timeout! Forcing all heaters OFF.");
+        Serial.println("CRITICAL ERROR: CAN Watchdog Timeout! Forcing all heaters OFF and motor STOP.");
         for (int i = 0; i < NUM_ZONES; i++) {
             zoneState[i] = "OFF"; // Force state to OFF
             commandedState[i] = "OFF"; // Reset command
             // --- FIX: Use ledcWriteChannel ---
             ledcWriteChannel(heaterPWMChannels[i], 0); // Turn off heater
         }
+        
+        // Stop motor/servo
+        servoEnabled = false;
+        setServoPosition(servoPosition); // Keep current position, just stop movement
+        
         // Reset timer to prevent spamming logs
         lastCanMessageTime = millis(); 
     }
