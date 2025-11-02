@@ -153,7 +153,11 @@ void checkCanMessages() {
                     // Debug: print raw bytes received
                     Serial.printf("RX: Setpoint Zone 1 bytes: %02X %02X %02X %02X\n", 
                                   rxFrame.data[0], rxFrame.data[1], rxFrame.data[2], rxFrame.data[3]);
-                    memcpy(&targetSetpoint[0], rxFrame.data, 4);
+                    // Copy bytes into a float variable first, then assign to double
+                    float tempFloat;
+                    memcpy(&tempFloat, rxFrame.data, 4);
+                    targetSetpoint[0] = (double)tempFloat;
+                    Serial.printf("RX: Intermediate float value: %.1f\n", tempFloat);
                 }
                 Serial.printf("RX: Setpoint Zone 1 = %.1f\n", targetSetpoint[0]);
                 break;
@@ -161,7 +165,10 @@ void checkCanMessages() {
                 if (rxFrame.data_length_code == 4) {
                     Serial.printf("RX: Setpoint Zone 2 bytes: %02X %02X %02X %02X\n", 
                                   rxFrame.data[0], rxFrame.data[1], rxFrame.data[2], rxFrame.data[3]);
-                    memcpy(&targetSetpoint[1], rxFrame.data, 4);
+                    float tempFloat;
+                    memcpy(&tempFloat, rxFrame.data, 4);
+                    targetSetpoint[1] = (double)tempFloat;
+                    Serial.printf("RX: Intermediate float value: %.1f\n", tempFloat);
                 }
                 Serial.printf("RX: Setpoint Zone 2 = %.1f\n", targetSetpoint[1]);
                 break;
@@ -169,7 +176,10 @@ void checkCanMessages() {
                 if (rxFrame.data_length_code == 4) {
                     Serial.printf("RX: Setpoint Zone 3 bytes: %02X %02X %02X %02X\n", 
                                   rxFrame.data[0], rxFrame.data[1], rxFrame.data[2], rxFrame.data[3]);
-                    memcpy(&targetSetpoint[2], rxFrame.data, 4);
+                    float tempFloat;
+                    memcpy(&tempFloat, rxFrame.data, 4);
+                    targetSetpoint[2] = (double)tempFloat;
+                    Serial.printf("RX: Intermediate float value: %.1f\n", tempFloat);
                 }
                 Serial.printf("RX: Setpoint Zone 3 = %.1f\n", targetSetpoint[2]);
                 break;
