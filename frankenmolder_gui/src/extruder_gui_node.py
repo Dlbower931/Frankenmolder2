@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk # Import the themed toolkit for tabs (Notebook)
 from threading import Thread, Lock
 import math
+import sys # Added for stderr
 
 # --- Configuration ---
 ZONE_COUNT = 3
@@ -27,9 +28,7 @@ class ExtruderGUI(tk.Frame):
         super().__init__(master)
         self.master = master
         self.master.title("Frankenmolder Control Interface")
-        # Adjust window size if needed
-        # self.master.geometry("800x480") 
-
+        
         # --- ROS Communication Objects ---
         self.publishers = {}
         self.subscribers = {}
@@ -41,39 +40,14 @@ class ExtruderGUI(tk.Frame):
         self.dashboard_frame = DashboardFrame(self.notebook)
         self.notebook.add(self.dashboard_frame, text='Dashboard')
 
-        # --- Tab 2: Heater Control (with Scrollbar) ---
-        # Create a container frame for the tab content
-        heater_tab_container = ttk.Frame(self.notebook)
-        heater_tab_container.pack(fill="both", expand=True) # Fill the tab
-
-        # Create a Canvas widget
-        canvas = tk.Canvas(heater_tab_container)
-        # Create a Scrollbar
-        scrollbar = ttk.Scrollbar(heater_tab_container, orient="vertical", command=canvas.yview)
-        # Configure the canvas to use the scrollbar
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        # Pack the scrollbar and canvas
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-
-        # Create the actual content frame (HeaterControlFrame) *inside* the canvas
-        self.heater_frame = HeaterControlFrame(canvas, self) # Pass canvas as parent
-        
-        # Add the content frame to the canvas
-        canvas.create_window((0, 0), window=self.heater_frame, anchor="nw")
-
-        # Bind the <Configure> event of the content frame to update the canvas scrollregion
-        # This makes the scrollbar aware of the content's total size
-        self.heater_frame.bind("<Configure>", 
-                               lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        # Add the container (with canvas and scrollbar) to the notebook
-        self.notebook.add(heater_tab_container, text='Extruder Heaters')
+        # --- Tab 2: Heater Control (NO Scrollbar) ---
+        # Create the HeaterControlFrame directly in the notebook
+        self.heater_frame = HeaterControlFrame(self.notebook, self) 
+        self.notebook.add(self.heater_frame, text='Extruder Heaters')
         # --- End of Tab 2 Setup ---
 
         # --- Tab 3: Motor Control ---
-        self.motor_frame = MotorControlFrame(self.notebook, self) # Pass self (main app)
+        self.motor_frame = MotorControlFrame(self.notebook, self)
         self.notebook.add(self.motor_frame, text='Extruder Motor')
 
         self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
@@ -115,14 +89,11 @@ class ExtruderGUI(tk.Frame):
             self.publishers["motor_set_rpm"] = rospy.Publisher('/extruder/motor/set_rpm', Float32, queue_size=1)
             self.publishers["motor_state_cmd"] = rospy.Publisher('/extruder/motor/state_cmd', String, queue_size=1)
 
-            # --- UPDATED SUBSCRIBER ---
-            # Change subscription from /actual_state to /state_cmd
-            self.subscribers["motor_state_cmd"] = rospy.Subscriber(
-                '/extruder/motor/state_cmd', # Listen for state from PICO/self
+            self.subscribers["motor_actual_state"] = rospy.Subscriber(
+                '/extruder/motor/actual_state', # Listen for state from PICO
                 String,
                 self.update_motor_state_callback
             )
-            # --------------------------
 
             rospy.loginfo("GUI: ROS Comms Initialized.")
             self.message_var.set("ROS Connection Established.")
@@ -177,7 +148,6 @@ class ExtruderGUI(tk.Frame):
 
         # Reschedule the next check
         self.master.after(GUI_POLL_INTERVAL_MS, self.poll_ros_updates)
-
 class DashboardFrame(tk.Frame):
     """A blank frame for the main dashboard/overview page."""
     def __init__(self, parent, **kwargs):
@@ -195,7 +165,7 @@ class DashboardFrame(tk.Frame):
 class HeaterControlFrame(tk.Frame):
     """The frame containing the 3-Zone Heater controls."""
     def __init__(self, parent, main_app, **kwargs):
-        # Parent is now the Canvas, which is fine
+        # Parent is now the Notebook, which is fine
         super().__init__(parent, **kwargs) 
         self.main_app = main_app # Reference to main app to access publishers
 
@@ -206,9 +176,8 @@ class HeaterControlFrame(tk.Frame):
         self.mode_labels = {} # Store refs to labels for coloring
 
         # --- Main Barrel Frame ---
-        # This frame is now *inside* the canvas
+        # This frame is now *inside* the tab
         barrel_frame = tk.Frame(self, bd=2, relief=tk.SUNKEN)
-        # Use pack() instead of grid() since this frame is inside the canvas window
         barrel_frame.pack(padx=10, pady=10, fill=tk.X, expand=True)
 
         # --- Create Controls for Each Zone ---
@@ -313,7 +282,7 @@ class HeaterControlFrame(tk.Frame):
         try:
             # We want the button to say "START" but send "HEATING"
             internal_command = state_command
-            if state_command == "START": # This check is redundant now but harmless
+            if state_command == "START":
                 internal_command = "HEATING"
 
             msg = String(internal_command)
@@ -324,8 +293,6 @@ class HeaterControlFrame(tk.Frame):
 
         except Exception as e:
             rospy.logerr(f"GUI publish_state_cmd Error ({zone_id}): {e}")
-
-
 class MotorControlFrame(tk.Frame):
     """The frame containing the Extruder Motor controls."""
     def __init__(self, parent, main_app, **kwargs):
@@ -334,7 +301,7 @@ class MotorControlFrame(tk.Frame):
 
         # --- Tkinter Variables ---
         self.target_rpm = tk.DoubleVar(value=10.0)
-        self.actual_motor_state = tk.StringVar(value="OFF") # Default to OFF
+        self.actual_motor_state = tk.StringVar(value="STOPPED")
 
         # --- Layout ---
         control_frame = tk.LabelFrame(self, text="Motor Control", padx=20, pady=20, font=("Arial", 14, "bold"))
@@ -358,30 +325,28 @@ class MotorControlFrame(tk.Frame):
         button_frame.grid(row=2, column=0, columnspan=3, pady=20)
         
         start_button = tk.Button(button_frame, text="START MOTOR", bg="green", fg="white", font=("Arial", 14, "bold"), height=2, width=15,
-                                 # Publish "ON" when "START MOTOR" is clicked
                                  command=lambda: self.publish_motor_cmd("ON"))
         start_button.pack(side=tk.LEFT, padx=10)
 
         stop_button = tk.Button(button_frame, text="STOP MOTOR", bg="red", fg="white", font=("Arial", 14, "bold"), height=2, width=15,
-                                # Publish "OFF" when "STOP MOTOR" is clicked
                                 command=lambda: self.publish_motor_cmd("OFF"))
         stop_button.pack(side=tk.LEFT, padx=10)
 
     def update_gui_widgets(self):
         """Update all widgets in this frame with data from shared state."""
         with data_lock:
-            state = latest_motor_state # This now comes from /extruder/motor/state_cmd
+            state = latest_motor_state
             self.actual_motor_state.set(state)
             
             # Update color based on state
-            if state == "ON":
+            if state == "RUNNING" or state == "ON": # Accept "ON" as running
                 self.state_label.config(fg="green")
-            elif state == "OFF":
+            elif state == "STOPPED" or state == "OFF": # Accept "OFF" as stopped
                 self.state_label.config(fg="red")
-            elif state == "FAULT": # Add other states as needed
+            elif state == "FAULT":
                 self.state_label.config(fg="orange")
             else:
-                self.state_label.config(fg="black") # Default for states like "STARTING", etc.
+                self.state_label.config(fg="black")
 
     def publish_set_rpm(self):
         """Validate and publish the target RPM."""
@@ -413,11 +378,9 @@ class MotorControlFrame(tk.Frame):
             return
 
         try:
-            # The 'command' argument is now "ON" or "OFF"
             msg = String(command)
             pub.publish(msg)
             rospy.loginfo(f"GUI published motor_state_cmd: {command}")
-            # Use the button text for the user message
             user_action = "START" if command == "ON" else "STOP"
             self.main_app.message_var.set(f"Motor {user_action} command sent.")
         except Exception as e:
@@ -448,6 +411,10 @@ def main():
         
         # Create the Tkinter root window
         root = tk.Tk()
+        
+        # --- ADDED: Set to fullscreen ---
+        root.attributes('-fullscreen', True)
+        
         app = ExtruderGUI(root)
         
         # Start the ROS communication thread
