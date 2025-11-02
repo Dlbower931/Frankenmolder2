@@ -17,7 +17,8 @@ GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates
 # --- Shared State (Thread Safety) ---
 # Use dictionaries to store data for each zone
 latest_temps = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
-latest_state_cmds = {f"zone{i+1}": "OFF" for i in range(ZONE_COUNT)}
+# --- RENAMED: This now stores the *true* state from the control node ---
+latest_actual_states = {f"zone{i+1}": "OFF" for i in range(ZONE_COUNT)}
 latest_motor_state = "STOPPED" # Shared state for the motor
 
 # Lock to prevent race conditions when accessing shared data
@@ -40,7 +41,7 @@ class ExtruderGUI(tk.Frame):
         self.dashboard_frame = DashboardFrame(self.notebook)
         self.notebook.add(self.dashboard_frame, text='Dashboard')
 
-        # --- Tab 2: Heater Control (NO Scrollbar) ---
+        # --- Tab 2: Heater Control (No Scrollbar) ---
         # Create the HeaterControlFrame directly in the notebook
         self.heater_frame = HeaterControlFrame(self.notebook, self) 
         self.notebook.add(self.heater_frame, text='Extruder Heaters')
@@ -67,21 +68,23 @@ class ExtruderGUI(tk.Frame):
             # --- Heater Publishers & Subscribers ---
             for i in range(ZONE_COUNT):
                 zone_id = f"zone{i+1}"
-                # Publishers
+                # Publishers (GUI sends commands)
                 self.publishers[f"{zone_id}_setpoint"] = rospy.Publisher(f'/extruder/{zone_id}/setpoint', Float32, queue_size=1)
                 self.publishers[f"{zone_id}_state_cmd"] = rospy.Publisher(f'/extruder/{zone_id}/state_cmd', String, queue_size=1)
                 
-                # Subscribers
+                # Subscribers (GUI receives status)
                 self.subscribers[f"{zone_id}_temp"] = rospy.Subscriber(
                     f'/extruder/{zone_id}/temperature', 
                     Float32, 
                     self.update_temp_callback, 
                     callback_args=zone_id
                 )
-                self.subscribers[f"{zone_id}_state_cmd"] = rospy.Subscriber(
-                    f'/extruder/{zone_id}/state_cmd', # Listen to the same topic we publish to
+                
+                # --- FIX: Subscribe to the /actual_state topic ---
+                self.subscribers[f"{zone_id}_actual_state"] = rospy.Subscriber(
+                    f'/extruder/{zone_id}/actual_state', # Listen for the *true* state from the controller
                     String,
-                    self.update_state_cmd_callback,
+                    self.update_actual_state_callback, # Use the renamed callback
                     callback_args=zone_id
                 )
             
@@ -89,6 +92,7 @@ class ExtruderGUI(tk.Frame):
             self.publishers["motor_set_rpm"] = rospy.Publisher('/extruder/motor/set_rpm', Float32, queue_size=1)
             self.publishers["motor_state_cmd"] = rospy.Publisher('/extruder/motor/state_cmd', String, queue_size=1)
 
+            # This subscription for the motor is already correct
             self.subscribers["motor_actual_state"] = rospy.Subscriber(
                 '/extruder/motor/actual_state', # Listen for state from PICO
                 String,
@@ -115,11 +119,12 @@ class ExtruderGUI(tk.Frame):
         except Exception as e:
             rospy.logerr(f"R_TEMP_CB ({zone_id}): Error storing temp data: {e}")
 
-    def update_state_cmd_callback(self, state_msg, zone_id):
+    # --- RENAMED: This callback now listens to /actual_state ---
+    def update_actual_state_callback(self, state_msg, zone_id):
         """ROS thread callback: Safely update shared state data."""
         try:
             with data_lock:
-                latest_state_cmds[zone_id] = state_msg.data
+                latest_actual_states[zone_id] = state_msg.data
         except Exception as e:
             rospy.logerr(f"R_STATE_CB ({zone_id}): Error storing state data: {e}")
 
@@ -165,18 +170,17 @@ class DashboardFrame(tk.Frame):
 class HeaterControlFrame(tk.Frame):
     """The frame containing the 3-Zone Heater controls."""
     def __init__(self, parent, main_app, **kwargs):
-        # Parent is now the Notebook, which is fine
+        # Parent is now the Notebook
         super().__init__(parent, **kwargs) 
         self.main_app = main_app # Reference to main app to access publishers
 
         # --- Tkinter Variables (Local to this frame) ---
         self.current_temps = {}
         self.target_setpoints = {}
-        self.current_mode = {}
+        self.current_mode = {} # This will now reflect ACTUAL state
         self.mode_labels = {} # Store refs to labels for coloring
 
         # --- Main Barrel Frame ---
-        # This frame is now *inside* the tab
         barrel_frame = tk.Frame(self, bd=2, relief=tk.SUNKEN)
         barrel_frame.pack(padx=10, pady=10, fill=tk.X, expand=True)
 
@@ -187,7 +191,7 @@ class HeaterControlFrame(tk.Frame):
             # Init Tkinter vars
             self.current_temps[zone_id] = tk.StringVar(value="--")
             self.target_setpoints[zone_id] = tk.DoubleVar(value=200.0)
-            self.current_mode[zone_id] = tk.StringVar(value="OFF")
+            self.current_mode[zone_id] = tk.StringVar(value="OFF") # Displays ACTUAL state
 
             zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=10, pady=10, font=("Arial", 14, "bold"))
             zone_frame.grid(row=0, column=i, padx=5, pady=5, sticky="nsew")
@@ -199,7 +203,7 @@ class HeaterControlFrame(tk.Frame):
             temp_label.grid(row=0, column=1, columnspan=2, sticky="e")
             tk.Label(zone_frame, text="°C", font=("Arial", 12)).grid(row=0, column=3, sticky="w")
 
-            # Commanded Mode Display
+            # Actual Mode Display
             tk.Label(zone_frame, text="Mode:", font=("Arial", 12)).grid(row=1, column=0, sticky="w")
             mode_label = tk.Label(zone_frame, textvariable=self.current_mode[zone_id], font=("Arial", 12, "italic"))
             mode_label.grid(row=1, column=1, columnspan=3, sticky="e")
@@ -239,17 +243,17 @@ class HeaterControlFrame(tk.Frame):
                 else:
                     self.current_temps[zone_id].set("--")
                 
-                # Update Mode from state_cmd
-                mode = latest_state_cmds.get(zone_id, "OFF")
+                # --- FIX: Update Mode from the /actual_state topic data ---
+                mode = latest_actual_states.get(zone_id, "OFF")
                 self.current_mode[zone_id].set(mode)
                 
-                # Update Color
+                # Update Color based on the actual state
                 mode_label = self.mode_labels.get(zone_id)
                 if mode_label:
                     if mode == "OFF": mode_label.config(fg="red")
                     elif mode == "HEATING": mode_label.config(fg="orange")
                     elif mode == "PID": mode_label.config(fg="green")
-                    else: mode_label.config(fg="black")
+                    else: mode_label.config(fg="black") # Default/Unknown
 
     def publish_setpoint(self, zone_id):
         """Validate and publish the setpoint."""
@@ -267,6 +271,11 @@ class HeaterControlFrame(tk.Frame):
             pub.publish(msg)
             rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value}")
             self.main_app.message_var.set(f"{zone_id}: Setpoint {setpoint_value:.1f}°C accepted.")
+            
+            # --- We also send a HEATING command when setting a temp ---
+            # This is so the controller knows to start heating to this new setpoint
+            # if it was previously OFF.
+            self.publish_state_cmd(zone_id, "HEATING")
 
         except Exception as e:
              rospy.logwarn(f"GUI Validation Error ({zone_id}): {e}")
@@ -282,13 +291,12 @@ class HeaterControlFrame(tk.Frame):
         try:
             # We want the button to say "START" but send "HEATING"
             internal_command = state_command
-            if state_command == "START":
+            if state_command == "START": # (Just in case, though button sends HEATING)
                 internal_command = "HEATING"
 
             msg = String(internal_command)
             pub.publish(msg)
             rospy.loginfo(f"GUI published state_cmd for {zone_id}: {internal_command}")
-            # GUI now updates its mode based on the subscription echo, not locally.
             self.main_app.message_var.set(f"{zone_id}: {state_command} command sent.")
 
         except Exception as e:
@@ -412,8 +420,11 @@ def main():
         # Create the Tkinter root window
         root = tk.Tk()
         
-        # --- ADDED: Set to fullscreen ---
-        root.attributes('-fullscreen', True)
+        # --- REMOVED Fullscreen attribute ---
+        # root.attributes('-fullscreen', True) 
+        
+        # Optional: Set a good default size for your 7" display (e.g., 800x480)
+        # root.geometry("800x480") 
         
         app = ExtruderGUI(root)
         
