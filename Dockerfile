@@ -45,5 +45,9 @@ RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
     cd /app; \
     catkin_make_isolated --install -DCMAKE_BUILD_TYPE=Release"
 
+# --- FIX: Add execute permission to the generated setup file ---
+RUN chmod +x /app/install_isolated/setup.bash
+# -----------------------------------------------------------
+
 # 7. Set up final environment
 RUN echo "source /app/install_isolated/setup.bash" >> ~/.bashrc
