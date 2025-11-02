@@ -183,7 +183,9 @@ class CANBridgeNode:
                     ros_can_msg.id = message.arbitration_id
                     ros_can_msg.dlc = message.dlc
                     ros_can_msg.is_extended = message.is_extended_id
-                    ros_can_msg.is_rtr = message.is_rtr
+                    # --- FIX: Map python-can's 'is_remote_frame' to ROS's 'is_rtr' ---
+                    ros_can_msg.is_rtr = message.is_remote_frame
+                    # -----------------------------------------------------------
                     ros_can_msg.is_error = message.is_error
                     ros_can_msg.data = list(message.data) 
                     self.raw_can_pub.publish(ros_can_msg)
