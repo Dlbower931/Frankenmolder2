@@ -190,7 +190,7 @@ class HeaterControlFrame(tk.Frame):
             
             # Init Tkinter vars
             self.current_temps[zone_id] = tk.StringVar(value="--")
-            self.target_setpoints[zone_id] = tk.DoubleVar(value=200.0)
+            self.target_setpoints[zone_id] = tk.DoubleVar(value=30.0)
             self.current_mode[zone_id] = tk.StringVar(value="OFF") # Displays ACTUAL state
 
             zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=10, pady=10, font=("Arial", 14, "bold"))
