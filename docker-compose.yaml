@@ -1,17 +1,38 @@
-version: '3.8'
+version: '3.7'
 
 services:
-can-handler:
-build:
-context: .
-dockerfile: Dockerfile
-image: extruder-can-handler:latest
-container_name: can-handler
-restart: unless-stopped
-# --- CRITICAL ---
-# This gives the container access to the host's (Pi's) network stack,
-# which is required to see the 'can0' interface.
-network_mode: "host"
-# This capability is also required for socketcan access
-cap_add:
-- NET_ADMIN
+  ros:
+    container_name: frankenmolder_ros
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    # --- Networking & Hardware Access ---
+    # Host network mode is the easiest way to get access
+    # to the host's 'can0' interface
+    network_mode: host 
+    
+    # Privileged might still be needed for 'can0' access
+    privileged: true 
+    
+    # --- X-FORWARDING SETUP ---
+    environment:
+      # Hardcoded display for reliability after reboot
+      - DISPLAY=:0
+      # ROS Networking (Tailscale IP or localhost if running locally)
+      # Use your PI_TAILSCALE_IP
+      - ROS_MASTER_URI=http://100.119.150.8:11311
+      - ROS_IP=100.119.150.8
+      
+    volumes:
+      # Mount the X11 Unix socket (Crucial for GUI)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw 
+      # Mount log directory
+      - ./pi_ros_logs:/data/ros_logs 
+      
+    # --- DEVICES SECTION IS REMOVED ---
+    # No more /dev/spidev*, /dev/gpiomem, or /dev/ttyACM0
+
+    restart: always 
+    command: /bin/bash -c "source /opt/ros/noetic/setup.bash && /app/install_isolated/setup.bash && /app/start_node.sh; sleep infinity"
+    stop_signal: SIGINT

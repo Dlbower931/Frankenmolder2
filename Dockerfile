@@ -1,18 +1,66 @@
-# Use a slim Python base image
-FROM python:3.11-slim
+# --- STAGE 1: The Builder ---
+# This stage builds all your ROS packages.
+# We start from a full ROS image that has all the build tools.
+FROM ros:noetic-ros-desktop AS builder
 
-# Set the working directory inside the container
+# Install system dependencies for your packages
+# We need can-utils (for host tools) and python3-can (for the python script)
+# We also still need python3-tk for the GUI
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-can \
+    python3-tk \
+    can-utils \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# We don't need spidev or RPi.GPIO anymore
+
+# Set up the Catkin workspace
+WORKDIR /app
+RUN mkdir -p /app/src
+
+# --- Copy ONLY the packages we need ---
+# We are NOT copying temperature_sensor_pkg, heater_control_pkg, or pico_bridge_pkg
+COPY can_bridge_pkg /app/src/can_bridge_pkg
+COPY frankenmolder_gui /app/src/frankenmolder_gui
+COPY frankenmolder_utils /app/src/frankenmolder_utils
+
+# --- Make Python nodes executable ---
+# We must do this *before* building
+RUN chmod +x /app/src/can_bridge_pkg/src/can_bridge_node.py
+RUN chmod +x /app/src/frankenmolder_gui/src/extruder_gui_node.py
+RUN chmod +x /app/src/frankenmolder_utils/src/topic_watchdog.py
+
+# --- Build the Catkin workspace ---
+# Source ROS and build using --install
+RUN /bin/bash -c "source /opt/ros/noetic/setup.bash; \
+    cd /app; \
+    catkin_make_isolated --install -DCMAKE_BUILD_TYPE=Release"
+
+
+# --- STAGE 2: The Final, Small Image ---
+# We start from a minimal ROS image (ros-core)
+FROM ros:noetic-ros-core
+
+# Install ONLY the runtime dependencies (not the build tools)
+RUN apt-get update && apt-get install -y \
+    python3-can \
+    python3-tk \
+    can-utils \
+    # We still need rosbridge if the GUI uses it (can be removed if GUI uses ROS1 connection)
+    ros-noetic-rosbridge-server \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up the app directory
 WORKDIR /app
 
-# Copy the Python script into the container
-# This assumes pi_can_handler.py is in the same directory
-COPY pi_can_handler.py .
+# Copy the built workspace from the 'builder' stage
+# This copies the /app/install_isolated directory
+COPY --from=builder /app/install_isolated /app/install_isolated
 
-# Install python-can
-# We add --no-cache-dir to reduce image size
-RUN pip install --no-cache-dir python-can
+# Copy the start script
+COPY start_node.sh /app/start_node.sh
+RUN chmod +x /app/start_node.sh
 
-# Command to run the script when the container starts
-# The "-u" flag ensures Python output is unbuffered and prints to the console in real-time
-CMD ["python", "-u", "./pi_can_handler.py"]
-
+# This final image is now much smaller!
