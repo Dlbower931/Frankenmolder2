@@ -42,8 +42,8 @@ class NumberPadPopup:
         self.popup.attributes('-topmost', True)  # Keep on top
         self.popup.transient(parent)  # Remove minimize/maximize buttons
         
-        # Set a fixed size for the popup to prevent scrunching
-        popup_width = 400
+        # Set a fixed size for the popup to prevent scrunching (widened by 10px)
+        popup_width = 410
         popup_height = 500
         
         # Center popup on screen
