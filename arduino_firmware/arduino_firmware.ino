@@ -1,6 +1,8 @@
 /**
  * Frankenmolder - ESP32 Main Control Unit (v2 - True PID)
  *
+ * This is Part 1 of 3: Includes, Definitions, and Globals
+ *
  * Implements full PID control with PWM and a CAN watchdog.
  * 1. Reads 3x MAX6675 sensors.
  * 2. Receives Setpoint (float) and State (2-byte) Commands from Pi.
@@ -61,6 +63,7 @@ const int PWM_MAX_DUTY = 255; // Max duty cycle
 #define CAN_ID_CMD_STATE       0x210 // (2-byte) [ZoneIdx, StateCode]
 #define CAN_ID_CMD_MOTOR_STATE 0x220 // (string) "ON", "OFF"
 #define CAN_ID_CMD_MOTOR_RPM   0x221 // (string) "RPM50.0"
+#define CAN_ID_CMD_HEARTBEAT   0x200 // (Empty frame) Pi is alive
 
 // --- Global State & Control Variables ---
 #define NUM_ZONES 3
@@ -194,6 +197,11 @@ void checkCanMessages() {
                 // Add motor logic here
                 break;
             }
+            
+            // Handle the heartbeat ID (do nothing, just resets watchdog)
+            case CAN_ID_CMD_HEARTBEAT:
+                // Serial.println("RX: Heartbeat");
+                break;
         }
     }
 }
@@ -210,7 +218,7 @@ void runControlLogic() {
         // --- State Machine ---
         // Safety check: Invalid temp or setpoint forces OFF
         if (isnan(temp) || setpoint <= 0) {
-            if (currentState != "OFF") Serial.printf("Zone %d: Sensor/Setpoint invalid. Forcing OFF.\n", i+1);
+            if (currentState != "OFF") Serial.printf("Zone %d: Sensor/Setpoint invalid (Temp: %.1f, Setpoint: %.1f). Forcing OFF.\n", i+1, temp, setpoint);
             zoneState[i] = "OFF";
             pidBelowBandStartTime[i] = 0;
             pwmValue = 0;
@@ -218,11 +226,15 @@ void runControlLogic() {
         } else if (currentState == "OFF") {
             pwmValue = 0;
             pidBelowBandStartTime[i] = 0;
-            // --- UPDATED: Check for setpoint > 0 *before* allowing transition ---
+            
+            // --- LOGIC FIX: Check for command AND setpoint > 0 ---
+            // Only transition to HEATING if "HEATING" is commanded AND setpoint is valid
             if (command == "HEATING" && setpoint > 0) {
                 zoneState[i] = "HEATING";
                 Serial.printf("Zone %d: Transitioning OFF -> HEATING (Setpoint: %.1f)\n", i+1, setpoint);
             }
+            // If command is "HEATING" but setpoint is 0, it will do nothing (stay OFF)
+            // -----------------------------------------------------
             
         } else if (currentState == "HEATING") {
             pwmValue = PWM_MAX_DUTY; // Full power
@@ -230,11 +242,16 @@ void runControlLogic() {
             if (command == "OFF") {
                 zoneState[i] = "OFF";
                 Serial.printf("Zone %d: Transitioning HEATING -> OFF (Commanded)\n", i+1);
+            
+            // --- LOGIC FIX: Transition to PID when temp is within hysteresis band ---
+            // This ensures we stay in HEATING until close to setpoint, then PID takes over
             } else if (temp >= (setpoint - HYSTERESIS)) {
+            // -------------------------------------------------------------
                 zoneState[i] = "PID";
-                Serial.printf("Zone %d: Temp (%.1f) in band. Transitioning HEATING -> PID\n", i+1, temp);
+                Serial.printf("Zone %d: Temp (%.1f) within hysteresis band (setpoint: %.1f, band: %.1f). Transitioning HEATING -> PID\n", i+1, temp, setpoint, setpoint - HYSTERESIS);
                 myPID[i]->SetMode(AUTOMATIC); // Turn on PID computation
             }
+            // else: remain in HEATING state
 
         } else if (currentState == "PID") {
             if (command == "OFF") {
@@ -262,36 +279,31 @@ void runControlLogic() {
                     // Temp is good, reset timer
                     pidBelowBandStartTime[i] = 0;
                     
-                    // --- NEW: Use true PID logic ---
-                    // The PID library needs inputs (current temp), setpoint,
-                    // and a variable to write its output to.
-                    // We must update the setpoint for the PID object
-                    // myPID[i]->SetTunings(Kp, Ki, Kd); // Can also update tunings here
-                    
-                    // Compute() returns true if a new output was computed
+                    // --- Use true PID logic ---
                     bool computed = myPID[i]->Compute(); 
                     if(computed) {
                         pwmValue = (int)heaterOutput[i]; // Use the output from the PID lib
-                        Serial.printf("Zone %d: PID Compute. Temp: %.1f, Target: %.1f, Output: %d\n", i+1, temp, setpoint, pwmValue);
+                        // Serial.printf("Zone %d: PID Compute. Temp: %.1f, Target: %.1f, Output: %d\n", i+1, temp, setpoint, pwmValue); // Too noisy
                     }
                 }
             }
         }
         
         // --- Control Physical Heater Pin ---
-        // Use ledcWrite to set the PWM duty cycle (0-255)
-        ledcWrite(heaterPWMChannels[i], pwmValue);
+        // --- FIX: Use ledcWriteChannel ---
+        ledcWriteChannel(heaterPWMChannels[i], pwmValue);
     }
 }
 
 void checkCanWatchdog() {
-    if (millis() - lastCanMessageTime > CAN_WATCHDOG_TIMEOUT_MS) {
+    if (millis() - lastCanMessageTime > 5) {
         // CAN connection lost!
         Serial.println("CRITICAL ERROR: CAN Watchdog Timeout! Forcing all heaters OFF.");
         for (int i = 0; i < NUM_ZONES; i++) {
             zoneState[i] = "OFF"; // Force state to OFF
             commandedState[i] = "OFF"; // Reset command
-            ledcWrite(heaterPWMChannels[i], 0); // Turn off heater
+            // --- FIX: Use ledcWriteChannel ---
+            ledcWriteChannel(heaterPWMChannels[i], 0); // Turn off heater
         }
         // Reset timer to prevent spamming logs
         lastCanMessageTime = millis(); 
@@ -312,6 +324,7 @@ void sendAllStatus() {
     Serial.println();
 }
 
+
 // --- ARDUINO SKETCH ---
 void setup() {
     Serial.begin(115200);
@@ -320,10 +333,15 @@ void setup() {
 
     // 1. Configure Heater Pins as PWM
     for (int i = 0; i < NUM_ZONES; i++) {
-        // --- FIX: Use ledcAttach (more compatible) ---
-        //ledcSetup(heaterPWMChannels[i], PWM_FREQ, PWM_RESOLUTION);
-      //  ledcAttach(heaterPins[i], heaterPWMChannels[i]); // Use ledcAttach
-       // ledcWrite(heaterPWMChannels[i], 0); // Start OFF
+        // --- FIX for ESP32 Core v3+ ---
+        // 'ledcSetup' is deprecated/removed.
+        // 'ledcAttachChannel' now handles setup AND attachment.
+        // bool ledcAttachChannel(uint8_t pin, uint32_t freq, uint8_t resolution, uint8_t channel);
+        ledcAttachChannel(heaterPins[i], PWM_FREQ, PWM_RESOLUTION, heaterPWMChannels[i]);
+        
+        // Start with the heater OFF
+        ledcWriteChannel(heaterPWMChannels[i], 0);
+        // ---------------------------------
     }
     Serial.println("Heater PWM pins initialized.");
 

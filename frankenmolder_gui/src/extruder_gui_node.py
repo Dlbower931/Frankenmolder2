@@ -272,10 +272,8 @@ class HeaterControlFrame(tk.Frame):
             rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value}")
             self.main_app.message_var.set(f"{zone_id}: Setpoint {setpoint_value:.1f}°C accepted.")
             
-            # --- We also send a HEATING command when setting a temp ---
-            # This is so the controller knows to start heating to this new setpoint
-            # if it was previously OFF.
-            self.publish_state_cmd(zone_id, "HEATING")
+            # --- Removed automatic HEATING command ---
+            # User must explicitly click START to begin heating
 
         except Exception as e:
              rospy.logwarn(f"GUI Validation Error ({zone_id}): {e}")
