@@ -3,7 +3,7 @@
 """
 Receives CAN bus messages from the ESP32 controller (Temps),
 unpacks the data, and publishes it to ROS topics for the GUI.
-Also publishes raw CAN frames to /can_bus_raw for debugging.
+Also publishes raw CAN frames as a String to /can_bus_raw_string for debugging.
 
 Also, subscribes to ROS command topics (Motor, Heaters) from the GUI
 and sends the corresponding commands over the CAN bus to the ESP32.
@@ -15,7 +15,7 @@ import struct # Used to unpack/pack bytes
 import os
 import sys
 from std_msgs.msg import Float32, String
-from can_msgs.msg import Frame # <-- Added import for raw CAN frames
+# from can_msgs.msg import Frame # <-- No longer needed
 
 # --- Configuration ---
 CAN_INTERFACE = 'can0'
@@ -57,8 +57,8 @@ class CANBridgeNode:
         self.motor_state_pub = rospy.Publisher('/extruder/motor/actual_state', String, queue_size=10, latch=True)
         self.motor_rpm_pub = rospy.Publisher('/extruder/motor/actual_rpm', Float32, queue_size=10)
 
-        # --- Added: Publisher for raw CAN frames ---
-        self.raw_can_pub = rospy.Publisher('/can_bus_raw', Frame, queue_size=50)
+        # --- FIX: Publish raw CAN frames as a String ---
+        self.raw_can_pub = rospy.Publisher('/can_bus_raw_string', String, queue_size=50)
 
         # Helper for logging
         self.zone_names = {
@@ -176,21 +176,13 @@ class CANBridgeNode:
                 if rospy.is_shutdown():
                     break
                 
-                # --- Added: Publish raw CAN message for Foxglove ---
+                # --- FIX: Publish raw CAN message as a string ---
                 try:
-                    ros_can_msg = Frame()
-                    ros_can_msg.header.stamp = rospy.Time.now()
-                    ros_can_msg.id = message.arbitration_id
-                    ros_can_msg.dlc = message.dlc
-                    ros_can_msg.is_extended = message.is_extended_id
-                    ros_can_msg.is_rtr = message.is_remote_frame
-                    # --- FIX: Map python-can's 'is_error_frame' to ROS's 'is_error' ---
-                    ros_can_msg.is_error = message.is_error_frame
-                    # -----------------------------------------------------------
-                    ros_can_msg.data = list(message.data) 
-                    self.raw_can_pub.publish(ros_can_msg)
+                    # Convert the python-can message object to its default string representation
+                    raw_string = str(message)
+                    self.raw_can_pub.publish(String(raw_string))
                 except Exception as e:
-                    rospy.logerr(f"Failed to publish raw CAN frame: {e}")
+                    rospy.logerr(f"Failed to publish raw CAN string: {e}")
                 # ---------------------------------------------
                     
                 # --- Handle Temperature Status Messages ---
@@ -248,4 +240,3 @@ if __name__ == "__main__":
         rospy.loginfo("CAN Bridge Node shutting down.")
     except Exception as e:
         rospy.logfatal(f"CAN Bridge Node crashed: {e}")
-
