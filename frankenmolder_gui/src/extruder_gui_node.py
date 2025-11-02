@@ -74,8 +74,8 @@ class NumberPadPopup:
         buttons = [
             ['7', '8', '9', 'C'],
             ['4', '5', '6', '⌫'],
-            ['1', '2', '3', '.'],
-            ['-', '0', '+', self.confirm_text]
+            ['1', '2', '3', '0'],
+            ['', '', '', self.confirm_text]
         ]
         
         for i, row in enumerate(buttons):
@@ -110,18 +110,9 @@ class NumberPadPopup:
             self.input_str.set(current[:-1] if current else "")
         elif char == self.confirm_text:  # Confirm (OK or Set Target)
             self.confirm()
-        elif char == '.':
-            if '.' not in current:
-                self.input_str.set(current + char)
-        elif char == '-':
-            if current.startswith('-'):
-                self.input_str.set(current[1:])
-            else:
-                self.input_str.set('-' + current)
-        elif char == '+':
-            if current.startswith('-'):
-                self.input_str.set(current[1:])
-        else:  # Number
+        elif char == '':  # Empty button (spacer)
+            return  # Do nothing for empty buttons
+        else:  # Number (0-9)
             self.input_str.set(current + char)
     
     def confirm(self):
