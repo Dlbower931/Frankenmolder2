@@ -183,10 +183,10 @@ class CANBridgeNode:
                     ros_can_msg.id = message.arbitration_id
                     ros_can_msg.dlc = message.dlc
                     ros_can_msg.is_extended = message.is_extended_id
-                    # --- FIX: Map python-can's 'is_remote_frame' to ROS's 'is_rtr' ---
                     ros_can_msg.is_rtr = message.is_remote_frame
+                    # --- FIX: Map python-can's 'is_error_frame' to ROS's 'is_error' ---
+                    ros_can_msg.is_error = message.is_error_frame
                     # -----------------------------------------------------------
-                    ros_can_msg.is_error = message.is_error
                     ros_can_msg.data = list(message.data) 
                     self.raw_can_pub.publish(ros_can_msg)
                 except Exception as e:
@@ -248,3 +248,4 @@ if __name__ == "__main__":
         rospy.loginfo("CAN Bridge Node shutting down.")
     except Exception as e:
         rospy.logfatal(f"CAN Bridge Node crashed: {e}")
+
