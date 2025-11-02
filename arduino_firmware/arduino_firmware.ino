@@ -189,12 +189,12 @@ void checkCanMessages() {
                 if (rxFrame.data_length_code == 2) {
                     // Byte 0: Zone Index (1, 2, or 3)
                     int zoneIndex = rxFrame.data[0] - 1; // Convert 1-based to 0-based
-                    // Byte 1: State Code (0=OFF, 1=HEATING, 2=PID)
+                    // Byte 1: State Code (0=OFF, 1=ON, 2=PID)
                     int stateCode = rxFrame.data[1];
 
                     if (zoneIndex >= 0 && zoneIndex < NUM_ZONES) {
                         if (stateCode == 0) commandedState[zoneIndex] = "OFF";
-                        else if (stateCode == 1) commandedState[zoneIndex] = "HEATING";
+                        else if (stateCode == 1) commandedState[zoneIndex] = "ON";  // ON command means start heating
                         // The Pi should not command "PID", but we'll log it if it does
                         else if (stateCode == 2) commandedState[zoneIndex] = "PID"; 
                         Serial.printf("RX: Command Zone %d -> %s\n", zoneIndex+1, commandedState[zoneIndex].c_str());
@@ -251,12 +251,12 @@ void runControlLogic() {
             pidBelowBandStartTime[i] = 0;
             
             // --- LOGIC FIX: Check for command AND setpoint > 0 ---
-            // Only transition to HEATING if "HEATING" is commanded AND setpoint is valid
-            if (command == "HEATING" && setpoint > 0) {
+            // Only transition to HEATING if "ON" is commanded AND setpoint is valid
+            if ((command == "ON" || command == "HEATING") && setpoint > 0) {  // Support both "ON" and legacy "HEATING"
                 zoneState[i] = "HEATING";
                 Serial.printf("Zone %d: Transitioning OFF -> HEATING (Setpoint: %.1f)\n", i+1, setpoint);
             }
-            // If command is "HEATING" but setpoint is 0, it will do nothing (stay OFF)
+            // If command is "ON" but setpoint is 0, it will do nothing (stay OFF)
             // -----------------------------------------------------
             
         } else if (currentState == "HEATING") {
@@ -283,14 +283,14 @@ void runControlLogic() {
                 myPID[i]->SetMode(MANUAL); // Turn off PID computation
                 pwmValue = 0;
             } else {
-                // Check for temperature drop
-                if (temp < (setpoint - HYSTERESIS)) {
+                // --- CHANGED: Check if temp drops below setpoint (not setpoint - hysteresis) ---
+                if (temp < setpoint) {
                     if (pidBelowBandStartTime[i] == 0) {
                         pidBelowBandStartTime[i] = millis();
-                        Serial.printf("Zone %d: Temp (%.1f) dropped below PID band. Starting timer.\n", i+1, temp);
+                        Serial.printf("Zone %d: Temp (%.1f) dropped below setpoint (%.1f). Starting timer.\n", i+1, temp, setpoint);
                         pwmValue = PWM_MAX_DUTY; // Full power to recover
                     } else if (millis() - pidBelowBandStartTime[i] > PID_DROP_TIMEOUT_MS) {
-                        Serial.printf("Zone %d: Temp still low. Transitioning PID -> HEATING\n", i+1);
+                        Serial.printf("Zone %d: Temp (%.1f) still below setpoint (%.1f) after timeout. Transitioning PID -> HEATING\n", i+1, temp, setpoint);
                         zoneState[i] = "HEATING";
                         myPID[i]->SetMode(MANUAL); // Turn off PID computation
                         pwmValue = PWM_MAX_DUTY;
@@ -299,7 +299,7 @@ void runControlLogic() {
                         pwmValue = PWM_MAX_DUTY;
                     }
                 } else {
-                    // Temp is good, reset timer
+                    // Temp is at or above setpoint, reset timer
                     pidBelowBandStartTime[i] = 0;
                     
                     // --- Use true PID logic ---

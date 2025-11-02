@@ -227,7 +227,7 @@ class HeaterControlFrame(tk.Frame):
             off_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
             start_button = tk.Button(button_frame, text="START", bg="orange", fg="black", font=("Arial", 12, "bold"), height=2,
-                                     command=lambda zid=zone_id: self.publish_state_cmd(zid, "HEATING"))
+                                     command=lambda zid=zone_id: self.publish_state_cmd(zid, "ON"))
             start_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
     def update_gui_widgets(self):
@@ -282,21 +282,17 @@ class HeaterControlFrame(tk.Frame):
              self.main_app.message_var.set(f"Error ({zone_id}): {e}")
 
     def publish_state_cmd(self, zone_id, state_command):
-        """Publish the state command ('OFF', 'HEATING')."""
+        """Publish the state command ('OFF', 'ON')."""
         pub = self.main_app.publishers.get(f"{zone_id}_state_cmd")
         if not pub:
             rospy.logerr(f"State Command Publisher for {zone_id} not found.")
             return
 
         try:
-            # We want the button to say "START" but send "HEATING"
-            internal_command = state_command
-            if state_command == "START": # (Just in case, though button sends HEATING)
-                internal_command = "HEATING"
-
-            msg = String(internal_command)
+            # Send the command as-is (ON or OFF)
+            msg = String(state_command)
             pub.publish(msg)
-            rospy.loginfo(f"GUI published state_cmd for {zone_id}: {internal_command}")
+            rospy.loginfo(f"GUI published state_cmd for {zone_id}: {state_command}")
             self.main_app.message_var.set(f"{zone_id}: {state_command} command sent.")
 
         except Exception as e:

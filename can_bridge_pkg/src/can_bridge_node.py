@@ -159,7 +159,9 @@ class CANBridgeNode:
             return
 
         state_code = 0 # Default to OFF
-        if msg.data == "HEATING":
+        if msg.data == "ON":
+            state_code = 1
+        elif msg.data == "HEATING":  # Legacy support - map to ON
             state_code = 1
         elif msg.data == "PID":
             state_code = 2
