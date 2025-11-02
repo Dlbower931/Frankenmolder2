@@ -42,12 +42,14 @@ class NumberPadPopup:
         self.popup.attributes('-topmost', True)  # Keep on top
         self.popup.transient(parent)  # Remove minimize/maximize buttons
         
+        # Set a fixed size for the popup to prevent scrunching
+        popup_width = 500
+        popup_height = 600
+        
         # Center popup on screen
         self.popup.update_idletasks()
         screen_width = self.popup.winfo_screenwidth()
         screen_height = self.popup.winfo_screenheight()
-        popup_width = self.popup.winfo_reqwidth()
-        popup_height = self.popup.winfo_reqheight()
         x = (screen_width // 2) - (popup_width // 2)
         y = (screen_height // 2) - (popup_height // 2)
         self.popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
@@ -84,11 +86,12 @@ class NumberPadPopup:
         
         for i, row in enumerate(buttons):
             for j, btn_text in enumerate(row):
-                btn = tk.Button(button_frame, text=btn_text, font=("Arial", 20, "bold"),
-                               width=4, height=2, command=lambda t=btn_text: self.button_click(t))
-                btn.grid(row=i, column=j, padx=2, pady=2, sticky="nsew")
-                button_frame.grid_columnconfigure(j, weight=1)
-            button_frame.grid_rowconfigure(i, weight=1)
+                # Make buttons larger for better touchscreen use
+                btn = tk.Button(button_frame, text=btn_text, font=("Arial", 24, "bold"),
+                               width=5, height=3, command=lambda t=btn_text: self.button_click(t))
+                btn.grid(row=i, column=j, padx=5, pady=5, sticky="nsew")
+                button_frame.grid_columnconfigure(j, weight=1, minsize=100)
+            button_frame.grid_rowconfigure(i, weight=1, minsize=100)
         
         # Handle window close
         self.popup.protocol("WM_DELETE_WINDOW", self.cancel)
@@ -364,7 +367,7 @@ class HeaterControlFrame(tk.Frame):
                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "OFF"))
             off_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
-            start_button = tk.Button(button_frame, text="START", bg="orange", fg="black", font=("Arial", 12, "bold"), height=2,
+            start_button = tk.Button(button_frame, text="START", bg="green", fg="white", font=("Arial", 12, "bold"), height=2,
                                      command=lambda zid=zone_id: self.publish_state_cmd(zid, "ON"))
             start_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
