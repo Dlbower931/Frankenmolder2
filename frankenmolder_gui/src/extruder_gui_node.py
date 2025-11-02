@@ -74,8 +74,7 @@ class NumberPadPopup:
         buttons = [
             ['7', '8', '9', 'C'],
             ['4', '5', '6', '⌫'],
-            ['1', '2', '3', '0'],
-            ['', '', '', self.confirm_text]
+            ['1', '2', '3', '0']
         ]
         
         for i, row in enumerate(buttons):
@@ -86,6 +85,12 @@ class NumberPadPopup:
                 btn.grid(row=i, column=j, padx=5, pady=5, sticky="nsew")
                 button_frame.grid_columnconfigure(j, weight=1, minsize=100)
             button_frame.grid_rowconfigure(i, weight=1, minsize=100)
+        
+        # Add large "Set Target" button spanning all columns at the bottom
+        set_btn = tk.Button(button_frame, text="Set Target", font=("Arial", 24, "bold"),
+                           height=3, command=lambda: self.button_click(self.confirm_text))
+        set_btn.grid(row=3, column=0, columnspan=4, padx=5, pady=5, sticky="nsew")
+        button_frame.grid_rowconfigure(3, weight=1, minsize=100)
         
         # Handle window close
         self.popup.protocol("WM_DELETE_WINDOW", self.cancel)
