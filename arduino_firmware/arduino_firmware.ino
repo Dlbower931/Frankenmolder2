@@ -1,14 +1,15 @@
 /**
- * Frankenmolder - ESP32 Main Control Unit
+ * Frankenmolder - ESP32 Main Control Unit (v2 - True PID)
  *
- * This code runs on the ESP32 and performs all real-time tasks:
- * 1. Reads 3x MAX6675 temperature sensors via Software SPI.
- * 2. Receives Setpoint and State Commands from the Pi over CAN bus.
- * 3. Runs a State Machine (OFF, HEATING, PID) for each of the 3 zones.
- * 4. Runs a PID controller for each zone.
- * 5. Controls 3x Heater GPIO pins.
- * 6. Publishes actual Temperature and actual State back to the Pi over CAN.
- * * REQUIRED LIBRARIES:
+ * Implements full PID control with PWM and a CAN watchdog.
+ * 1. Reads 3x MAX6675 sensors.
+ * 2. Receives Setpoint (float) and State (2-byte) Commands from Pi.
+ * 3. Runs State Machine (OFF, HEATING, PID) for each zone.
+ * 4. Runs a true PID controller for each zone, outputting PWM (0-255).
+ * 5. Controls 3x Heater GPIO pins via PWM.
+ * 6. Publishes actual Temperature (float) and actual State (String) back to Pi.
+ *
+ * REQUIRED LIBRARIES:
  * 1. ESP32-TWAI-CAN (by rdupuis)
  * 2. Adafruit MAX6675 Library (by Adafruit)
  * 3. PID (by Brett Beauregard)
@@ -21,21 +22,29 @@
 
 // --- Pin Definitions ---
 // CAN
-#define CAN_TX 5
-#define CAN_RX 4
+#define CAN_TX 5 // (TXD)
+#define CAN_RX 4 // (RXD)
 // MAX6675 Software SPI
 #define SCK_PIN 18
 #define SO_PIN  19
 #define CS1_PIN 13
 #define CS2_PIN 14
 #define CS3_PIN 27
-// Heater Control (NEW - Choose your pins)
+// Heater Control (PWM)
 #define HEATER_PIN_1 12 // GPIO for Zone 1 Heater Relay/SSR
 #define HEATER_PIN_2 16 // GPIO for Zone 2 Heater Relay/SSR
 #define HEATER_PIN_3 17 // GPIO for Zone 3 Heater Relay/SSR
 const int heaterPins[3] = {HEATER_PIN_1, HEATER_PIN_2, HEATER_PIN_3};
+// PWM Channels (0, 1, 2)
+const int HEATER_PWM_CHAN_1 = 0;
+const int HEATER_PWM_CHAN_2 = 1;
+const int HEATER_PWM_CHAN_3 = 2;
+const int heaterPWMChannels[3] = {HEATER_PWM_CHAN_1, HEATER_PWM_CHAN_2, HEATER_PWM_CHAN_3};
+const int PWM_FREQ = 5000; // 5 kHz PWM frequency for SSRs
+const int PWM_RESOLUTION = 8; // 8-bit resolution (0-255)
+const int PWM_MAX_DUTY = 255; // Max duty cycle
 
-// --- CAN ID Protocol ---
+// --- CAN ID Protocol (Must match Pi's can_bridge_node.py) ---
 // ESP32 -> Pi (Status/Data)
 #define CAN_ID_STATUS_TEMP_1   0x101 // (float) Actual Temp Zone 1
 #define CAN_ID_STATUS_TEMP_2   0x102 // (float) Actual Temp Zone 2
@@ -43,12 +52,13 @@ const int heaterPins[3] = {HEATER_PIN_1, HEATER_PIN_2, HEATER_PIN_3};
 #define CAN_ID_STATUS_STATE_1  0x111 // (string) "OFF", "HEAT", "PID"
 #define CAN_ID_STATUS_STATE_2  0x112 // (string)
 #define CAN_ID_STATUS_STATE_3  0x113 // (string)
+// (Motor status... add later)
 
 // Pi -> ESP32 (Commands)
 #define CAN_ID_CMD_SETPOINT_1  0x201 // (float) Setpoint Zone 1
 #define CAN_ID_CMD_SETPOINT_2  0x202 // (float) Setpoint Zone 2
 #define CAN_ID_CMD_SETPOINT_3  0x203 // (float) Setpoint Zone 3
-#define CAN_ID_CMD_STATE       0x210 // (string) "zone1:HEATING", "zone2:OFF", etc.
+#define CAN_ID_CMD_STATE       0x210 // (2-byte) [ZoneIdx, StateCode]
 #define CAN_ID_CMD_MOTOR_STATE 0x220 // (string) "ON", "OFF"
 #define CAN_ID_CMD_MOTOR_RPM   0x221 // (string) "RPM50.0"
 
@@ -56,26 +66,29 @@ const int heaterPins[3] = {HEATER_PIN_1, HEATER_PIN_2, HEATER_PIN_3};
 #define NUM_ZONES 3
 
 // Sensor/State Data
-double actualTemp[NUM_ZONES]   = {0.0, 0.0, 0.0};
+double actualTemp[NUM_ZONES]   = {NAN, NAN, NAN}; // Use NAN for "not a number"
 double targetSetpoint[NUM_ZONES] = {0.0, 0.0, 0.0};
 double heaterOutput[NUM_ZONES] = {0.0, 0.0, 0.0}; // PID output variable (0-255)
-String zoneState[NUM_ZONES]    = {"OFF", "OFF", "OFF"};
-String commandedState[NUM_ZONES] = {"OFF", "OFF", "OFF"}; // From Pi
+String zoneState[NUM_ZONES]    = {"OFF", "OFF", "OFF"}; // The *actual* state of the controller
+String commandedState[NUM_ZONES] = {"OFF", "OFF", "OFF"}; // The *last command* from the Pi
 
 // PID Tuning (Start with gentle values, tune later)
-double Kp = 2.0, Ki = 0.5, Kd = 1.0;
+// Kp=Aggressive, Ki=Eliminates steady-state error, Kd=Prevents overshoot
+double Kp = 5.0, Ki = 0.2, Kd = 1.0;
 PID* myPID[NUM_ZONES]; // Array of PID controller objects
 
 // State Machine Logic
-const float HYSTERESIS = 2.0;
+const float HYSTERESIS = 3.0; // User request: ~3 degrees
 const unsigned long PID_DROP_TIMEOUT_MS = 5000; // 5 seconds
 unsigned long pidBelowBandStartTime[NUM_ZONES] = {0, 0, 0};
 
 // Timing
 const int STATUS_REPORT_PERIOD_MS = 500; // Send CAN status every 500ms
 const int CONTROL_LOOP_PERIOD_MS = 250;  // Run PID/State logic every 250ms
+const unsigned long CAN_WATCHDOG_TIMEOUT_MS = 5000; // 5 seconds
 unsigned long prevStatusMillis = 0;
 unsigned long prevControlMillis = 0;
+unsigned long lastCanMessageTime = 0; // For watchdog
 
 // Sensor Instances
 MAX6675 thermocouple1(SCK_PIN, CS1_PIN, SO_PIN);
@@ -101,9 +114,12 @@ void sendCanString(uint32_t id, String str) {
     txFrame.extd = 0;
     
     // Copy string, ensuring null-terminated and max 8 bytes
-    char data[8] = {0};
-    str.toCharArray(data, 8);
-    txFrame.data_length_code = strlen(data); // Send only length of string
+    char data[8] = {0}; // Initialize all to 0 (null)
+    str.toCharArray(data, 8); // Copy max 7 chars + null
+    txFrame.data_length_code = str.length(); // Send only length of string
+    if (txFrame.data_length_code > 8) {
+      txFrame.data_length_code = 8;
+    }
     memcpy(txFrame.data, data, txFrame.data_length_code);
     
     if (!ESP32Can.writeFrame(txFrame)) {
@@ -114,53 +130,48 @@ void sendCanString(uint32_t id, String str) {
 void readAllSensors() {
     for (int i = 0; i < NUM_ZONES; i++) {
         double tempC = thermocouples[i]->readCelsius();
-        if (isnan(tempC)) {
-            // Use last known good temp? For now, just mark as NaN
-            actualTemp[i] = NAN; 
-        } else {
-            actualTemp[i] = tempC;
-        }
+        // The Adafruit library returns NAN on fault
+        actualTemp[i] = tempC;
     }
 }
 
 void checkCanMessages() {
     CanFrame rxFrame;
     if (ESP32Can.readFrame(rxFrame)) {
-        Serial.printf("CAN RX ID 0x%X, DLC %d\n", rxFrame.identifier, rxFrame.data_length_code);
+        // --- NEW: Reset CAN watchdog timer on *any* received message ---
+        lastCanMessageTime = millis();
+        
+        // Serial.printf("CAN RX ID 0x%X, DLC %d\n", rxFrame.identifier, rxFrame.data_length_code);
         
         switch (rxFrame.identifier) {
             // --- Setpoint Commands ---
             case CAN_ID_CMD_SETPOINT_1:
                 if (rxFrame.data_length_code == 4) memcpy(&targetSetpoint[0], rxFrame.data, 4);
+                Serial.printf("RX: Setpoint Zone 1 = %.1f\n", targetSetpoint[0]);
                 break;
             case CAN_ID_CMD_SETPOINT_2:
                 if (rxFrame.data_length_code == 4) memcpy(&targetSetpoint[1], rxFrame.data, 4);
+                Serial.printf("RX: Setpoint Zone 2 = %.1f\n", targetSetpoint[1]);
                 break;
             case CAN_ID_CMD_SETPOINT_3:
                 if (rxFrame.data_length_code == 4) memcpy(&targetSetpoint[2], rxFrame.data, 4);
+                Serial.printf("RX: Setpoint Zone 3 = %.1f\n", targetSetpoint[2]);
                 break;
 
-            // --- State Command ---
+            // --- State Command (New 2-Byte Protocol) ---
             case CAN_ID_CMD_STATE: {
-                char data[9] = {0}; // 8 chars + null terminator
-                memcpy(data, rxFrame.data, rxFrame.data_length_code);
-                String cmdStr(data); // e.g., "zone1:HEATING"
-                
-                int colonIndex = cmdStr.indexOf(':');
-                if (colonIndex > 0) {
-                    String zone = cmdStr.substring(0, colonIndex); // "zone1"
-                    String state = cmdStr.substring(colonIndex + 1); // "HEATING"
-                    
-                    int zoneIndex = -1;
-                    if (zone == "zone1") zoneIndex = 0;
-                    else if (zone == "zone2") zoneIndex = 1;
-                    else if (zone == "zone3") zoneIndex = 2;
-                    
-                    if (zoneIndex != -1) {
-                        if (state == "OFF" || state == "HEATING") {
-                            Serial.printf("Received Command: Zone %d -> %s\n", zoneIndex+1, state.c_str());
-                            commandedState[zoneIndex] = state;
-                        }
+                if (rxFrame.data_length_code == 2) {
+                    // Byte 0: Zone Index (1, 2, or 3)
+                    int zoneIndex = rxFrame.data[0] - 1; // Convert 1-based to 0-based
+                    // Byte 1: State Code (0=OFF, 1=HEATING, 2=PID)
+                    int stateCode = rxFrame.data[1];
+
+                    if (zoneIndex >= 0 && zoneIndex < NUM_ZONES) {
+                        if (stateCode == 0) commandedState[zoneIndex] = "OFF";
+                        else if (stateCode == 1) commandedState[zoneIndex] = "HEATING";
+                        // The Pi should not command "PID", but we'll log it if it does
+                        else if (stateCode == 2) commandedState[zoneIndex] = "PID"; 
+                        Serial.printf("RX: Command Zone %d -> %s\n", zoneIndex+1, commandedState[zoneIndex].c_str());
                     }
                 }
                 break;
@@ -171,7 +182,7 @@ void checkCanMessages() {
                 char data[9] = {0};
                 memcpy(data, rxFrame.data, rxFrame.data_length_code);
                 String cmdStr(data);
-                Serial.printf("Motor Command: %s\n", cmdStr.c_str());
+                Serial.printf("RX: Motor Command: %s\n", cmdStr.c_str());
                 // Add motor logic here
                 break;
             }
@@ -179,7 +190,7 @@ void checkCanMessages() {
                  char data[9] = {0};
                 memcpy(data, rxFrame.data, rxFrame.data_length_code);
                 String cmdStr(data);
-                Serial.printf("Motor RPM Command: %s\n", cmdStr.c_str());
+                Serial.printf("RX: Motor RPM Command: %s\n", cmdStr.c_str());
                 // Add motor logic here
                 break;
             }
@@ -189,12 +200,12 @@ void checkCanMessages() {
 
 void runControlLogic() {
     for (int i = 0; i < NUM_ZONES; i++) {
-        String currentState = zoneState[i];
-        String command = commandedState[i];
+        String currentState = zoneState[i]; // The state we are *currently* in
+        String command = commandedState[i]; // The state the Pi *wants* us to be in
         double temp = actualTemp[i];
         double setpoint = targetSetpoint[i];
         
-        bool heaterOn = false; // Default to OFF
+        int pwmValue = 0; // Default to OFF
 
         // --- State Machine ---
         // Safety check: Invalid temp or setpoint forces OFF
@@ -202,18 +213,19 @@ void runControlLogic() {
             if (currentState != "OFF") Serial.printf("Zone %d: Sensor/Setpoint invalid. Forcing OFF.\n", i+1);
             zoneState[i] = "OFF";
             pidBelowBandStartTime[i] = 0;
-            heaterOn = false;
+            pwmValue = 0;
         
         } else if (currentState == "OFF") {
-            heaterOn = false;
+            pwmValue = 0;
             pidBelowBandStartTime[i] = 0;
+            // --- UPDATED: Check for setpoint > 0 *before* allowing transition ---
             if (command == "HEATING" && setpoint > 0) {
                 zoneState[i] = "HEATING";
-                Serial.printf("Zone %d: Transitioning OFF -> HEATING\n", i+1);
+                Serial.printf("Zone %d: Transitioning OFF -> HEATING (Setpoint: %.1f)\n", i+1, setpoint);
             }
             
         } else if (currentState == "HEATING") {
-            heaterOn = true;
+            pwmValue = PWM_MAX_DUTY; // Full power
             pidBelowBandStartTime[i] = 0;
             if (command == "OFF") {
                 zoneState[i] = "OFF";
@@ -221,42 +233,68 @@ void runControlLogic() {
             } else if (temp >= (setpoint - HYSTERESIS)) {
                 zoneState[i] = "PID";
                 Serial.printf("Zone %d: Temp (%.1f) in band. Transitioning HEATING -> PID\n", i+1, temp);
+                myPID[i]->SetMode(AUTOMATIC); // Turn on PID computation
             }
 
         } else if (currentState == "PID") {
             if (command == "OFF") {
                 zoneState[i] = "OFF";
                 Serial.printf("Zone %d: Transitioning PID -> OFF (Commanded)\n", i+1);
+                myPID[i]->SetMode(MANUAL); // Turn off PID computation
+                pwmValue = 0;
             } else {
                 // Check for temperature drop
                 if (temp < (setpoint - HYSTERESIS)) {
                     if (pidBelowBandStartTime[i] == 0) {
                         pidBelowBandStartTime[i] = millis();
                         Serial.printf("Zone %d: Temp (%.1f) dropped below PID band. Starting timer.\n", i+1, temp);
-                        heaterOn = true; // Keep heater on
+                        pwmValue = PWM_MAX_DUTY; // Full power to recover
                     } else if (millis() - pidBelowBandStartTime[i] > PID_DROP_TIMEOUT_MS) {
                         Serial.printf("Zone %d: Temp still low. Transitioning PID -> HEATING\n", i+1);
                         zoneState[i] = "HEATING";
-                        heaterOn = true;
+                        myPID[i]->SetMode(MANUAL); // Turn off PID computation
+                        pwmValue = PWM_MAX_DUTY;
                     } else {
                         // Still in dropout timer, keep heater on
-                        heaterOn = true;
+                        pwmValue = PWM_MAX_DUTY;
                     }
                 } else {
                     // Temp is good, reset timer
                     pidBelowBandStartTime[i] = 0;
-                    // Run PID logic (simple ON/OFF for now)
-                    if (temp < setpoint) {
-                        heaterOn = true;
-                    } else {
-                        heaterOn = false;
+                    
+                    // --- NEW: Use true PID logic ---
+                    // The PID library needs inputs (current temp), setpoint,
+                    // and a variable to write its output to.
+                    // We must update the setpoint for the PID object
+                    // myPID[i]->SetTunings(Kp, Ki, Kd); // Can also update tunings here
+                    
+                    // Compute() returns true if a new output was computed
+                    bool computed = myPID[i]->Compute(); 
+                    if(computed) {
+                        pwmValue = (int)heaterOutput[i]; // Use the output from the PID lib
+                        Serial.printf("Zone %d: PID Compute. Temp: %.1f, Target: %.1f, Output: %d\n", i+1, temp, setpoint, pwmValue);
                     }
                 }
             }
         }
         
         // --- Control Physical Heater Pin ---
-        digitalWrite(heaterPins[i], heaterOn ? HIGH : LOW);
+        // Use ledcWrite to set the PWM duty cycle (0-255)
+        ledcWrite(heaterPWMChannels[i], pwmValue);
+    }
+}
+
+void checkCanWatchdog() {
+    if (millis() - lastCanMessageTime > CAN_WATCHDOG_TIMEOUT_MS) {
+        // CAN connection lost!
+        Serial.println("CRITICAL ERROR: CAN Watchdog Timeout! Forcing all heaters OFF.");
+        for (int i = 0; i < NUM_ZONES; i++) {
+            zoneState[i] = "OFF"; // Force state to OFF
+            commandedState[i] = "OFF"; // Reset command
+            ledcWrite(heaterPWMChannels[i], 0); // Turn off heater
+        }
+        // Reset timer to prevent spamming logs
+        lastCanMessageTime = millis(); 
     }
 }
 
@@ -278,14 +316,16 @@ void sendAllStatus() {
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("--- Frankenmolder ESP32 Controller ---");
+    Serial.println("--- Frankenmolder ESP32 Controller (v2 - True PID) ---");
 
-    // 1. Configure Heater Pins
+    // 1. Configure Heater Pins as PWM
     for (int i = 0; i < NUM_ZONES; i++) {
-        pinMode(heaterPins[i], OUTPUT);
-        digitalWrite(heaterPins[i], LOW); // Start OFF
+        // --- FIX: Use ledcAttach (more compatible) ---
+        //ledcSetup(heaterPWMChannels[i], PWM_FREQ, PWM_RESOLUTION);
+      //  ledcAttach(heaterPins[i], heaterPWMChannels[i]); // Use ledcAttach
+       // ledcWrite(heaterPWMChannels[i], 0); // Start OFF
     }
-    Serial.println("Heater pins initialized.");
+    Serial.println("Heater PWM pins initialized.");
 
     // 2. Configure CAN Bus
     ESP32Can.setPins(CAN_TX, CAN_RX);
@@ -295,17 +335,17 @@ void setup() {
         Serial.println("CRITICAL ERROR: CAN bus failed!");
         while (1) delay(1000);
     }
+    // Initialize watchdog timer
+    lastCanMessageTime = millis();
 
     // 3. Configure PID Controllers
     for (int i = 0; i < NUM_ZONES; i++) {
         // We pass pointers to the global variables
         myPID[i] = new PID(&actualTemp[i], &heaterOutput[i], &targetSetpoint[i], Kp, Ki, Kd, DIRECT);
-        myPID[i]->SetMode(AUTOMATIC);
-        // This simple state machine uses ON/OFF (0 or 1)
-        myPID[i]->SetOutputLimits(0, 1); 
-        // We will read heaterOutput[i] and use digitalWrite()
-        // (Note: This sketch uses simple on/off, not the PID output variable.
-        // To use true PID, you'd need to set limits 0-255 and use analogWrite/PWM)
+        // --- NEW: Set PID output limits to 0-255 for 8-bit PWM ---
+        myPID[i]->SetOutputLimits(0, PWM_MAX_DUTY);
+        // Start in MANUAL mode (off) until we enter PID state
+        myPID[i]->SetMode(MANUAL);
     }
     Serial.println("PID controllers initialized.");
 
@@ -323,14 +363,17 @@ void loop() {
 
     // 2. Always check for incoming commands
     checkCanMessages();
+
+    // 3. NEW: Check for CAN connection loss
+    checkCanWatchdog();
     
-    // 3. Run control logic periodically
+    // 4. Run control logic periodically
     if (currentMillis - prevControlMillis >= CONTROL_LOOP_PERIOD_MS) {
         prevControlMillis = currentMillis;
         runControlLogic();
     }
 
-    // 4. Send status reports periodically
+    // 5. Send status reports periodically
     if (currentMillis - prevStatusMillis >= STATUS_REPORT_PERIOD_MS) {
         prevStatusMillis = currentMillis;
         sendAllStatus();

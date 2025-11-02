@@ -4,6 +4,7 @@
 Receives CAN bus messages from the ESP32 controller (Temps, States),
 unpacks the data, and publishes it to ROS topics for the GUI.
 ...
+Also sends a 1Hz heartbeat to the ESP32 to prevent watchdog timeout.
 """
 
 import rospy
@@ -16,33 +17,40 @@ from std_msgs.msg import Float32, String
 
 # --- Configuration ---
 CAN_INTERFACE = 'can0'
+HEARTBEAT_RATE_HZ = 1.0 # Send heartbeat once per second
 
 # --- CAN ID Protocol (Must match ESP32 code) ---
-# ... (CAN_ID_STATUS... definitions are the same) ...
+
+# --- ESP32 -> Pi (Status/Data) ---
+# (float) Actual Temp
 CAN_ID_STATUS_TEMP_1 = 0x101
 CAN_ID_STATUS_TEMP_2 = 0x102
 CAN_ID_STATUS_TEMP_3 = 0x103
+# (string) Actual State "OFF", "HEAT", "PID"
 CAN_ID_STATUS_STATE_1 = 0x111
 CAN_ID_STATUS_STATE_2 = 0x112
 CAN_ID_STATUS_STATE_3 = 0x113
+# (Motor status... add later)
+# CAN_ID_STATUS_MOTOR_STATE = 0x120
+# CAN_ID_STATUS_MOTOR_RPM = 0x121
 
 # --- Pi -> ESP32 (Commands) ---
+# --- ADDED HEARTBEAT ID ---
+CAN_ID_CMD_HEARTBEAT = 0x200 # (Empty frame) Pi is alive
+# (float) Setpoint
 CAN_ID_CMD_SETPOINT_1 = 0x201
 CAN_ID_CMD_SETPOINT_2 = 0x202
 CAN_ID_CMD_SETPOINT_3 = 0x203
-# --- NEW PROTOCOL for Heater State ---
-# Uses 2 bytes: [ZoneIndex (1-3), StateCode (0=OFF, 1=HEATING, 2=PID)]
-CAN_ID_CMD_STATE = 0x210 
-# ---------------------------------
+# (string) "zoneX:STATE"
+CAN_ID_CMD_STATE = 0x210
+# (string) "ON", "OFF"
 CAN_ID_CMD_MOTOR_STATE = 0x220
+# (string) "RPMxx.x"
 CAN_ID_CMD_MOTOR_RPM = 0x221
 
 
 class CANBridgeNode:
     def __init__(self):
-        # ... (Same __init__... as before) ...
-        # ... (Publishers, Subscribers, CAN Bus Setup) ...
-# ... (File content redacted for brevity, assume __init__ is correct) ...
         rospy.loginfo(f"Initializing CAN Bridge Node...")
         
         # --- Publishers (CAN -> ROS) ---
@@ -108,19 +116,33 @@ class CANBridgeNode:
         rospy.Subscriber('/extruder/zone2/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone2"))
         rospy.Subscriber('/extruder/zone3/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone3"))
 
+        # --- ADDED: Start the heartbeat timer ---
+        self.heartbeat_timer = rospy.Timer(rospy.Duration(1.0 / HEARTBEAT_RATE_HZ), self.send_heartbeat_callback)
+        
         rospy.loginfo("CAN Bridge Node initialized. Listening for ROS topics and CAN messages.")
 
 
     # --- ROS -> CAN Callback Methods ---
+    
+    def send_heartbeat_callback(self, event=None):
+        """Called by rospy.Timer, sends a heartbeat to keep the ESP32 watchdog happy."""
+        # This message is empty. Its only purpose is to be *received*
+        # by the ESP32's `checkCanMessages()` function to reset the watchdog.
+        try:
+            msg = can.Message(arbitration_id=CAN_ID_CMD_HEARTBEAT,
+                              dlc=0, # 0 bytes of data
+                              is_extended_id=False)
+            self.bus.send(msg)
+            rospy.loginfo_throttle(60, f"CAN TX (ID 0x{CAN_ID_CMD_HEARTBEAT:X}): Sent Heartbeat.")
+        except Exception as e:
+            rospy.logerr(f"CAN TX (ID 0x{CAN_ID_CMD_HEARTBEAT:X}): Failed to send heartbeat: {e}")
 
     def ros_motor_state_callback(self, msg):
-        # ... (This logic remains the same) ...
-        command_str = msg.data # e.g., "ON" or "OFF"
+        command_str = msg.data
         rospy.loginfo(f"ROS->CAN: Received motor state command: {command_str}")
         self.send_can_string(CAN_ID_CMD_MOTOR_STATE, command_str)
 
     def ros_motor_rpm_callback(self, msg):
-        # ... (This logic remains the same) ...
         rpm_val = msg.data
         command_str = f"RPM{rpm_val:.1f}" 
         rospy.loginfo(f"ROS->CAN: Received motor RPM: {rpm_val}, Sending string: '{command_str}'")
@@ -128,31 +150,24 @@ class CANBridgeNode:
 
     def ros_heater_state_callback(self, msg, zone_id):
         """Called when GUI sends /extruder/zoneX/state_cmd"""
-        # --- NEW PROTOCOL ---
         rospy.loginfo(f"ROS->CAN: Received {zone_id} state command: {msg.data}")
         
-        # 1. Convert zone_id string "zone1" to integer 1
         try:
-            zone_index = int(zone_id.replace('zone', '')) # 1, 2, or 3
+            zone_index = int(zone_id.replace('zone', ''))
         except Exception:
             rospy.logerr(f"Invalid zone_id '{zone_id}' in state callback.")
             return
 
-        # 2. Convert state string to integer code
         state_code = 0 # Default to OFF
         if msg.data == "HEATING":
             state_code = 1
         elif msg.data == "PID":
             state_code = 2
         
-        # 3. Pack into 2 bytes
         data_bytes = [zone_index, state_code]
-        
-        # 4. Send the 2-byte CAN message
         self.send_can_bytes(CAN_ID_CMD_STATE, data_bytes)
 
     def ros_heater_setpoint_callback(self, msg, zone_id):
-        # ... (This logic remains the same) ...
         can_id = self.setpoint_can_ids.get(zone_id)
         if can_id is not None:
             rospy.loginfo(f"ROS->CAN: Received {zone_id} setpoint: {msg.data}, sending to ID 0x{can_id:X}")
@@ -163,7 +178,6 @@ class CANBridgeNode:
     # --- CAN Sending Methods ---
     
     def send_can_string(self, can_id, command_string):
-        # ... (This function remains the same) ...
         if not self.bus: return
         data_bytes = command_string.encode('utf-8')
         if len(data_bytes) > 8:
@@ -179,20 +193,6 @@ class CANBridgeNode:
         except Exception as e:
             rospy.logerr(f"CAN TX (ID 0x{can_id:X}): Failed to send command: {e}")
 
-    def send_can_float(self, can_id, value):
-        # ... (This function remains the same) ...
-        if not self.bus: return
-        try:
-            data_bytes = struct.pack('<f', value)
-            msg = can.Message(arbitration_id=can_id,
-                              data=data_bytes,
-                              dlc=4,
-                              is_extended_id=False)
-            self.bus.send(msg)
-            rospy.loginfo(f"CAN TX (ID 0x{can_id:X}): Sent float {value:.2f}")
-        except Exception as e:
-            rospy.logerr(f"CAN TX (ID 0x{can_id:X}): Failed to send float: {e}")
-            
     def send_can_bytes(self, can_id, data_bytes):
         """Sends a raw list/array of bytes over CAN."""
         if not self.bus: return
@@ -207,10 +207,22 @@ class CANBridgeNode:
         except Exception as e:
             rospy.logerr(f"CAN TX (ID 0x{can_id:X}): Failed to send bytes: {e}")
 
+    def send_can_float(self, can_id, value):
+        if not self.bus: return
+        try:
+            data_bytes = struct.pack('<f', value)
+            msg = can.Message(arbitration_id=can_id,
+                              data=data_bytes,
+                              dlc=4,
+                              is_extended_id=False)
+            self.bus.send(msg)
+            rospy.loginfo(f"CAN TX (ID 0x{can_id:X}): Sent float {value:.2f}")
+        except Exception as e:
+            rospy.logerr(f"CAN TX (ID 0x{can_id:X}): Failed to send float: {e}")
+
     # --- CAN -> ROS Listener Loop ---
             
     def run_listener(self):
-        # ... (This function remains the same) ...
         if not self.bus:
             rospy.logerr("CAN bus not initialized. Shutting down listener.")
             return
@@ -228,8 +240,7 @@ class CANBridgeNode:
                     self.raw_can_pub.publish(String(raw_string))
                 except Exception as e:
                     rospy.logerr(f"Failed to publish raw CAN string: {e}")
-                # ---------------------------------------------
-                    
+                
                 # --- Handle Temperature Status Messages ---
                 if message.arbitration_id in self.temp_pubs:
                     temp_publisher = self.temp_pubs[message.arbitration_id]
