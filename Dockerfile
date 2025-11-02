@@ -5,20 +5,20 @@ FROM ros:noetic-ros-core-focal
 ENV HOME /app
 WORKDIR /app
 
-# 1. Install all dependencies (CAN + GUI + Bridge + Build Tools)
+# 1. Install all dependencies
 RUN apt-get update && apt-get install -y \
     # ROS dependencies
     ros-noetic-rosbridge-server \
+    ros-noetic-can-msgs \
     # Python tools
     python3-pip \
     python3-dev \
     # Build tools
     git \
     build-essential \
-    # --- ADDED: GUI dependencies ---
+    # GUI dependencies
     python3-tk \
     tk-dev \
-    # ---------------------------
     # NEW CAN dependencies
     can-utils \
     python3-can \
@@ -33,10 +33,8 @@ RUN mkdir -p /app/src/can_bridge_pkg \
              /app/src/frankenmolder_gui \
              /app/src/frankenmolder_utils
 COPY can_bridge_pkg /app/src/can_bridge_pkg
-# --- ADDED: Copy GUI and Utils packages ---
 COPY frankenmolder_gui /app/src/frankenmolder_gui
 COPY frankenmolder_utils /app/src/frankenmolder_utils
-# ----------------------------------------
 
 # 3. Copy the startup script
 COPY start_node.sh /app/start_node.sh
@@ -44,10 +42,8 @@ RUN chmod +x /app/start_node.sh
 
 # 4. Make Python nodes executable
 RUN chmod +x /app/src/can_bridge_pkg/src/can_bridge_node.py
-# --- ADDED: chmod for GUI and Utils nodes ---
 RUN chmod +x /app/src/frankenmolder_gui/src/extruder_gui_node.py
 RUN chmod +x /app/src/frankenmolder_utils/src/topic_watchdog.py
-# ------------------------------------------
 
 # 5. Fix .ros permission issue
 RUN mkdir -p /app/.ros && chmod -R 777 /app/.ros
@@ -62,4 +58,3 @@ RUN chmod +x /app/install_isolated/setup.bash
 
 # 8. Set up final environment
 RUN echo "source /app/install_isolated/setup.bash" >> ~/.bashrc
-

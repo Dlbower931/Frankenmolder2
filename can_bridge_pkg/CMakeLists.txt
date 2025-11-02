@@ -5,6 +5,7 @@ project(can_bridge_pkg)
 find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
+  can_msgs
 )
 
 # This is required for all catkin packages
