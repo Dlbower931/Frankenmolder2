@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+can-handler:
+build:
+context: .
+dockerfile: Dockerfile
+image: extruder-can-handler:latest
+container_name: can-handler
+restart: unless-stopped
+# --- CRITICAL ---
+# This gives the container access to the host's (Pi's) network stack,
+# which is required to see the 'can0' interface.
+network_mode: "host"
+# This capability is also required for socketcan access
+cap_add:
+- NET_ADMIN
