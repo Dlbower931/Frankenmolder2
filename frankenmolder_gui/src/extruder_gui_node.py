@@ -46,8 +46,15 @@ class NumberPadPopup:
         y = entry_widget.winfo_rooty() + entry_widget.winfo_height()
         self.popup.geometry(f"+{x}+{y}")
         
-        # Current input string
-        self.input_str = tk.StringVar(value=entry_var.get() if hasattr(entry_var, 'get') else "")
+        # Current input string - get initial value from entry variable
+        initial_val = ""
+        if hasattr(entry_var, 'get'):
+            try:
+                val = entry_var.get()
+                initial_val = str(val) if val else ""
+            except:
+                initial_val = ""
+        self.input_str = tk.StringVar(value=initial_val)
         
         # Display field
         display_frame = tk.Frame(self.popup, bg="white", bd=2, relief=tk.SUNKEN)
@@ -120,8 +127,11 @@ class NumberPadPopup:
             if self.max_val is not None and value > self.max_val:
                 value = self.max_val
             
-            # Update the entry variable
-            self.entry_var.set(value)
+            # Update the entry variable (works for both DoubleVar and StringVar)
+            if hasattr(self.entry_var, 'set'):
+                # Format value to 1 decimal place for display
+                formatted_value = f"{value:.1f}"
+                self.entry_var.set(formatted_value)
             
             # Call callback if provided
             if self.callback:
@@ -291,6 +301,7 @@ class HeaterControlFrame(tk.Frame):
         self.target_setpoints = {}
         self.current_mode = {} # This will now reflect ACTUAL state
         self.mode_labels = {} # Store refs to labels for coloring
+        self.setpoint_buttons = {} # Store refs to setpoint buttons
 
         # --- Main Barrel Frame ---
         barrel_frame = tk.Frame(self, bd=2, relief=tk.SUNKEN)
@@ -302,7 +313,8 @@ class HeaterControlFrame(tk.Frame):
             
             # Init Tkinter vars
             self.current_temps[zone_id] = tk.StringVar(value="--")
-            self.target_setpoints[zone_id] = tk.DoubleVar(value=30.0)
+            # Use StringVar for setpoint so button can display formatted text
+            self.target_setpoints[zone_id] = tk.StringVar(value="30.0")
             self.current_mode[zone_id] = tk.StringVar(value="OFF") # Displays ACTUAL state
 
             zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=10, pady=10, font=("Arial", 14, "bold"))
@@ -323,11 +335,14 @@ class HeaterControlFrame(tk.Frame):
 
             # Setpoint Control (Stacked)
             tk.Label(zone_frame, text="Setpoint (°C):", font=("Arial", 12)).grid(row=2, column=0, columnspan=4, pady=(10, 0), sticky="w")
-            entry = tk.Entry(zone_frame, textvariable=self.target_setpoints[zone_id], width=10, font=("Arial", 16))
-            entry.grid(row=3, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
-            # Bind click to open number pad
-            entry.bind('<Button-1>', lambda e, zid=zone_id: self.open_number_pad(zid, entry))
-            entry.bind('<FocusIn>', lambda e, zid=zone_id: self.open_number_pad(zid, entry))
+            # Create button that displays current setpoint value and opens number pad when clicked
+            setpoint_btn = tk.Button(zone_frame, textvariable=self.target_setpoints[zone_id], 
+                                   font=("Arial", 18, "bold"), width=15, height=2,
+                                   command=lambda zid=zone_id: self.open_number_pad(zid))
+            setpoint_btn.grid(row=3, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
+            self.setpoint_buttons[zone_id] = setpoint_btn
+            # Format the button text to show value with decimal
+            self.update_setpoint_button_text(zone_id)
             set_button = tk.Button(zone_frame, text="Set Target", font=("Arial", 14, "bold"), width=15,
                                    command=lambda zid=zone_id: self.publish_setpoint(zid))
             set_button.grid(row=4, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
@@ -370,14 +385,23 @@ class HeaterControlFrame(tk.Frame):
                     elif mode == "PID": mode_label.config(fg="green")
                     else: mode_label.config(fg="black") # Default/Unknown
 
-    def open_number_pad(self, zone_id, entry_widget):
+    def update_setpoint_button_text(self, zone_id):
+        """Update the button text to show formatted setpoint value."""
+        value = self.target_setpoints[zone_id].get()
+        self.target_setpoints[zone_id].set(value)  # Trigger update
+        # The button textvariable will automatically update
+    
+    def open_number_pad(self, zone_id):
         """Open number pad popup for setpoint entry."""
+        # Create a dummy entry widget for positioning (won't be visible)
+        entry_ref = self.setpoint_buttons[zone_id]
         NumberPadPopup(
             self.main_app.master,
-            entry_widget,
+            entry_ref,
             self.target_setpoints[zone_id],
             min_val=MIN_SETPOINT,
-            max_val=MAX_SETPOINT
+            max_val=MAX_SETPOINT,
+            callback=lambda v: self.update_setpoint_button_text(zone_id)
         )
     
     def publish_setpoint(self, zone_id):
@@ -388,7 +412,10 @@ class HeaterControlFrame(tk.Frame):
             return
 
         try:
-            setpoint_value = self.target_setpoints[zone_id].get()
+            # Get value as float from StringVar
+            setpoint_str = self.target_setpoints[zone_id].get()
+            setpoint_value = float(setpoint_str)
+            
             if not (MIN_SETPOINT <= setpoint_value <= MAX_SETPOINT):
                 raise ValueError(f"Setpoint must be between {MIN_SETPOINT} and {MAX_SETPOINT}°C.")
 
@@ -402,8 +429,11 @@ class HeaterControlFrame(tk.Frame):
             # --- Removed automatic HEATING command ---
             # User must explicitly click START to begin heating
 
-        except Exception as e:
+        except ValueError as e:
              rospy.logwarn(f"GUI Validation Error ({zone_id}): {e}")
+             self.main_app.message_var.set(f"Error ({zone_id}): {e}")
+        except Exception as e:
+             rospy.logwarn(f"GUI Error ({zone_id}): {e}")
              self.main_app.message_var.set(f"Error ({zone_id}): {e}")
 
     def publish_state_cmd(self, zone_id, state_command):
@@ -443,11 +473,11 @@ class MotorControlFrame(tk.Frame):
         
         # RPM Control
         tk.Label(control_frame, text="Target RPM:", font=("Arial", 14)).grid(row=1, column=0, padx=10, pady=10, sticky="w")
-        rpm_entry = tk.Entry(control_frame, textvariable=self.target_rpm, width=10, font=("Arial", 18))
-        rpm_entry.grid(row=1, column=1, padx=10, pady=10, ipady=8)
-        # Bind click to open number pad
-        rpm_entry.bind('<Button-1>', lambda e: self.open_number_pad_rpm(rpm_entry))
-        rpm_entry.bind('<FocusIn>', lambda e: self.open_number_pad_rpm(rpm_entry))
+        # Create button that displays current RPM value and opens number pad when clicked
+        self.rpm_btn = tk.Button(control_frame, textvariable=self.target_rpm, 
+                                font=("Arial", 20, "bold"), width=8, height=2,
+                                command=self.open_number_pad_rpm)
+        self.rpm_btn.grid(row=1, column=1, padx=10, pady=10, ipady=8)
         rpm_button = tk.Button(control_frame, text="Set RPM", font=("Arial", 14, "bold"),
                                command=self.publish_set_rpm)
         rpm_button.grid(row=1, column=2, padx=10, pady=10, ipady=8)
@@ -480,11 +510,11 @@ class MotorControlFrame(tk.Frame):
             else:
                 self.state_label.config(fg="black")
 
-    def open_number_pad_rpm(self, entry_widget):
+    def open_number_pad_rpm(self):
         """Open number pad popup for RPM entry."""
         NumberPadPopup(
             self.main_app.master,
-            entry_widget,
+            self.rpm_btn,
             self.target_rpm,
             min_val=0.0,
             max_val=100.0  # Reasonable max for RPM
