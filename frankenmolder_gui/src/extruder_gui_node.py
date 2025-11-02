@@ -43,8 +43,8 @@ class NumberPadPopup:
         self.popup.transient(parent)  # Remove minimize/maximize buttons
         
         # Set a fixed size for the popup to prevent scrunching
-        popup_width = 500
-        popup_height = 600
+        popup_width = 400
+        popup_height = 500
         
         # Center popup on screen
         self.popup.update_idletasks()
@@ -367,7 +367,7 @@ class HeaterControlFrame(tk.Frame):
                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "OFF"))
             off_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
-            start_button = tk.Button(button_frame, text="START", bg="green", fg="white", font=("Arial", 12, "bold"), height=2,
+            start_button = tk.Button(button_frame, text="START", bg="blue", fg="white", font=("Arial", 12, "bold"), height=2,
                                      command=lambda zid=zone_id: self.publish_state_cmd(zid, "ON"))
             start_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
@@ -412,7 +412,7 @@ class HeaterControlFrame(tk.Frame):
             self.target_setpoints[zone_id],
             min_val=MIN_SETPOINT,
             max_val=MAX_SETPOINT,
-            confirm_text="Set Target",
+            confirm_text="Set",
             callback=lambda v: self.update_setpoint_button_text(zone_id),
             on_confirm=lambda v: self.publish_setpoint(zone_id)  # Auto-publish when Set Target is pressed
         )
