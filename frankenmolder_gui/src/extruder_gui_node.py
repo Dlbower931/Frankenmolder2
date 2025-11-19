@@ -316,7 +316,7 @@ class HeaterControlFrame(tk.Frame):
 
         # --- Main Barrel Frame ---
         barrel_frame = tk.Frame(self, bd=2, relief=tk.SUNKEN)
-        barrel_frame.pack(padx=10, pady=10, fill=tk.X, expand=True)
+        barrel_frame.pack(padx=8, pady=8, fill=tk.X, expand=True)
 
         # --- Create Controls for Each Zone ---
         for i in range(ZONE_COUNT):
@@ -328,44 +328,44 @@ class HeaterControlFrame(tk.Frame):
             self.target_setpoints[zone_id] = tk.StringVar(value="30.0")
             self.current_mode[zone_id] = tk.StringVar(value="OFF") # Displays ACTUAL state
 
-            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=10, pady=10, font=("Arial", 14, "bold"))
-            zone_frame.grid(row=0, column=i, padx=5, pady=5, sticky="nsew")
+            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=8, pady=8, font=("Arial", 11, "bold"))
+            zone_frame.grid(row=0, column=i, padx=4, pady=4, sticky="nsew")
             barrel_frame.grid_columnconfigure(i, weight=1) # Make zones expand equally
 
             # Temperature Display
-            tk.Label(zone_frame, text="Temp:", font=("Arial", 12)).grid(row=0, column=0, sticky="w")
-            temp_label = tk.Label(zone_frame, textvariable=self.current_temps[zone_id], font=("Arial", 18, "bold"))
+            tk.Label(zone_frame, text="Temp:", font=("Arial", 10)).grid(row=0, column=0, sticky="w")
+            temp_label = tk.Label(zone_frame, textvariable=self.current_temps[zone_id], font=("Arial", 14, "bold"))
             temp_label.grid(row=0, column=1, columnspan=2, sticky="e")
-            tk.Label(zone_frame, text="°C", font=("Arial", 12)).grid(row=0, column=3, sticky="w")
+            tk.Label(zone_frame, text="°C", font=("Arial", 10)).grid(row=0, column=3, sticky="w")
 
             # Actual Mode Display
-            tk.Label(zone_frame, text="Mode:", font=("Arial", 12)).grid(row=1, column=0, sticky="w")
-            mode_label = tk.Label(zone_frame, textvariable=self.current_mode[zone_id], font=("Arial", 12, "italic"))
+            tk.Label(zone_frame, text="Mode:", font=("Arial", 10)).grid(row=1, column=0, sticky="w")
+            mode_label = tk.Label(zone_frame, textvariable=self.current_mode[zone_id], font=("Arial", 10, "italic"))
             mode_label.grid(row=1, column=1, columnspan=3, sticky="e")
             self.mode_labels[zone_id] = mode_label # Store ref for coloring
 
             # Setpoint Control (Stacked)
-            tk.Label(zone_frame, text="Setpoint (°C):", font=("Arial", 12)).grid(row=2, column=0, columnspan=4, pady=(10, 0), sticky="w")
+            tk.Label(zone_frame, text="Setpoint (°C):", font=("Arial", 10)).grid(row=2, column=0, columnspan=4, pady=(8, 0), sticky="w")
             # Create button that displays current setpoint value and opens number pad when clicked
             setpoint_btn = tk.Button(zone_frame, textvariable=self.target_setpoints[zone_id], 
-                                   font=("Arial", 18, "bold"), width=15, height=2,
+                                   font=("Arial", 14, "bold"), width=12, height=1,
                                    command=lambda zid=zone_id: self.open_number_pad(zid))
-            setpoint_btn.grid(row=3, column=0, columnspan=4, pady=5, ipady=8, sticky="ew")
+            setpoint_btn.grid(row=3, column=0, columnspan=4, pady=4, ipady=6, sticky="ew")
             self.setpoint_buttons[zone_id] = setpoint_btn
             # Format the button text to show value with decimal
             self.update_setpoint_button_text(zone_id)
             # Removed "Set Target" button - it's now in the number pad popup
 
             # State Control Buttons (Stacked OFF/START)
-            tk.Label(zone_frame, text="Commands:", font=("Arial", 12)).grid(row=5, column=0, columnspan=4, pady=(15, 0), sticky="w")
+            tk.Label(zone_frame, text="Commands:", font=("Arial", 10)).grid(row=5, column=0, columnspan=4, pady=(12, 0), sticky="w")
             button_frame = tk.Frame(zone_frame)
-            button_frame.grid(row=6, column=0, columnspan=4, pady=(5, 5), sticky="ew")
+            button_frame.grid(row=6, column=0, columnspan=4, pady=(4, 4), sticky="ew")
 
-            off_button = tk.Button(button_frame, text="OFF", bg="red", fg="white", font=("Arial", 12, "bold"), height=2,
+            off_button = tk.Button(button_frame, text="OFF", bg="red", fg="white", font=("Arial", 10, "bold"), height=1,
                                    command=lambda zid=zone_id: self.publish_state_cmd(zid, "OFF"))
             off_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
-            start_button = tk.Button(button_frame, text="START", bg="#00008B", fg="white", font=("Arial", 12, "bold"), height=2,
+            start_button = tk.Button(button_frame, text="START", bg="#00008B", fg="white", font=("Arial", 10, "bold"), height=1,
                                      command=lambda zid=zone_id: self.publish_state_cmd(zid, "ON"))
             start_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
 
