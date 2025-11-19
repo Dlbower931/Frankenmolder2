@@ -9,7 +9,7 @@ import math
 import sys # Added for stderr
 
 # --- Configuration ---
-ZONE_COUNT = 3
+ZONE_COUNT = 4
 MIN_SETPOINT = 20.0
 MAX_SETPOINT = 350.0
 GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates

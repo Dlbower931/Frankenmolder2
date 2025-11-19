@@ -32,16 +32,19 @@
 #define CS1_PIN 13
 #define CS2_PIN 14
 #define CS3_PIN 27
+#define CS4_PIN 26
 // Heater Control (PWM)
 #define HEATER_PIN_1 12 // GPIO for Zone 1 Heater Relay/SSR
 #define HEATER_PIN_2 16 // GPIO for Zone 2 Heater Relay/SSR
 #define HEATER_PIN_3 17 // GPIO for Zone 3 Heater Relay/SSR
-const int heaterPins[3] = {HEATER_PIN_1, HEATER_PIN_2, HEATER_PIN_3};
-// PWM Channels (0, 1, 2)
+#define HEATER_PIN_4 25 // GPIO for Zone 4 Heater Relay/SSR
+const int heaterPins[4] = {HEATER_PIN_1, HEATER_PIN_2, HEATER_PIN_3, HEATER_PIN_4};
+// PWM Channels (0, 1, 2, 5) - Channel 3 is used by servo
 const int HEATER_PWM_CHAN_1 = 0;
 const int HEATER_PWM_CHAN_2 = 1;
 const int HEATER_PWM_CHAN_3 = 2;
-const int heaterPWMChannels[3] = {HEATER_PWM_CHAN_1, HEATER_PWM_CHAN_2, HEATER_PWM_CHAN_3};
+const int HEATER_PWM_CHAN_4 = 5;
+const int heaterPWMChannels[4] = {HEATER_PWM_CHAN_1, HEATER_PWM_CHAN_2, HEATER_PWM_CHAN_3, HEATER_PWM_CHAN_4};
 const int PWM_FREQ = 5000; // 5 kHz PWM frequency for SSRs
 const int PWM_RESOLUTION = 8; // 8-bit resolution (0-255)
 const int PWM_MAX_DUTY = 255; // Max duty cycle
@@ -53,22 +56,25 @@ const int PWM_MAX_DUTY = 255; // Max duty cycle
 #define CAN_ID_STATUS_TEMP_1   0x101 // (float) Actual Temp Zone 1
 #define CAN_ID_STATUS_TEMP_2   0x102 // (float) Actual Temp Zone 2
 #define CAN_ID_STATUS_TEMP_3   0x103 // (float) Actual Temp Zone 3
+#define CAN_ID_STATUS_TEMP_4   0x104 // (float) Actual Temp Zone 4
 #define CAN_ID_STATUS_STATE_1  0x111 // (string) "OFF", "HEAT", "PID"
 #define CAN_ID_STATUS_STATE_2  0x112 // (string)
 #define CAN_ID_STATUS_STATE_3  0x113 // (string)
+#define CAN_ID_STATUS_STATE_4  0x114 // (string)
 #define CAN_ID_STATUS_MOTOR_STATE 0x120 // (string) "ON", "OFF"
 
 // Pi -> ESP32 (Commands)
 #define CAN_ID_CMD_SETPOINT_1  0x201 // (float) Setpoint Zone 1
 #define CAN_ID_CMD_SETPOINT_2  0x202 // (float) Setpoint Zone 2
 #define CAN_ID_CMD_SETPOINT_3  0x203 // (float) Setpoint Zone 3
+#define CAN_ID_CMD_SETPOINT_4  0x204 // (float) Setpoint Zone 4
 #define CAN_ID_CMD_STATE       0x210 // (2-byte) [ZoneIdx, StateCode]
 #define CAN_ID_CMD_MOTOR_STATE 0x220 // (string) "ON", "OFF"
 #define CAN_ID_CMD_MOTOR_RPM   0x221 // (string) "RPM50.0"
 #define CAN_ID_CMD_HEARTBEAT   0x200 // (Empty frame) Pi is alive
 
 // --- Global State & Control Variables ---
-#define NUM_ZONES 3
+#define NUM_ZONES 4
 
 // Sensor/State Data
 double actualTemp[NUM_ZONES]   = {NAN, NAN, NAN}; // Use NAN for "not a number"
@@ -119,7 +125,8 @@ unsigned long prevServoMillis = 0;
 MAX6675 thermocouple1(SCK_PIN, CS1_PIN, SO_PIN);
 MAX6675 thermocouple2(SCK_PIN, CS2_PIN, SO_PIN);
 MAX6675 thermocouple3(SCK_PIN, CS3_PIN, SO_PIN);
-MAX6675* thermocouples[NUM_ZONES] = {&thermocouple1, &thermocouple2, &thermocouple3};
+MAX6675 thermocouple4(SCK_PIN, CS4_PIN, SO_PIN);
+MAX6675* thermocouples[NUM_ZONES] = {&thermocouple1, &thermocouple2, &thermocouple3, &thermocouple4};
 
 // --- Helper Functions ---
 void sendCanFloat(uint32_t id, float value) {
@@ -204,6 +211,17 @@ void checkCanMessages() {
                     Serial.printf("RX: Intermediate float value: %.1f\n", tempFloat);
                 }
                 Serial.printf("RX: Setpoint Zone 3 = %.1f\n", targetSetpoint[2]);
+                break;
+            case CAN_ID_CMD_SETPOINT_4:
+                if (rxFrame.data_length_code == 4) {
+                    Serial.printf("RX: Setpoint Zone 4 bytes: %02X %02X %02X %02X\n", 
+                                  rxFrame.data[0], rxFrame.data[1], rxFrame.data[2], rxFrame.data[3]);
+                    float tempFloat;
+                    memcpy(&tempFloat, rxFrame.data, 4);
+                    targetSetpoint[3] = (double)tempFloat;
+                    Serial.printf("RX: Intermediate float value: %.1f\n", tempFloat);
+                }
+                Serial.printf("RX: Setpoint Zone 4 = %.1f\n", targetSetpoint[3]);
                 break;
 
             // --- State Command (New 2-Byte Protocol) ---

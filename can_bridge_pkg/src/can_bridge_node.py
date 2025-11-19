@@ -26,10 +26,12 @@ HEARTBEAT_RATE_HZ = 1.0 # Send heartbeat once per second
 CAN_ID_STATUS_TEMP_1 = 0x101
 CAN_ID_STATUS_TEMP_2 = 0x102
 CAN_ID_STATUS_TEMP_3 = 0x103
+CAN_ID_STATUS_TEMP_4 = 0x104
 # (string) Actual State "OFF", "HEAT", "PID"
 CAN_ID_STATUS_STATE_1 = 0x111
 CAN_ID_STATUS_STATE_2 = 0x112
 CAN_ID_STATUS_STATE_3 = 0x113
+CAN_ID_STATUS_STATE_4 = 0x114
 # (string) Motor Actual State "ON", "OFF"
 CAN_ID_STATUS_MOTOR_STATE = 0x120
 # CAN_ID_STATUS_MOTOR_RPM = 0x121
@@ -41,6 +43,7 @@ CAN_ID_CMD_HEARTBEAT = 0x200 # (Empty frame) Pi is alive
 CAN_ID_CMD_SETPOINT_1 = 0x201
 CAN_ID_CMD_SETPOINT_2 = 0x202
 CAN_ID_CMD_SETPOINT_3 = 0x203
+CAN_ID_CMD_SETPOINT_4 = 0x204
 # (string) "zoneX:STATE"
 CAN_ID_CMD_STATE = 0x210
 # (string) "ON", "OFF"
@@ -58,18 +61,21 @@ class CANBridgeNode:
             CAN_ID_STATUS_TEMP_1: rospy.Publisher('/extruder/zone1/temperature', Float32, queue_size=10),
             CAN_ID_STATUS_TEMP_2: rospy.Publisher('/extruder/zone2/temperature', Float32, queue_size=10),
             CAN_ID_STATUS_TEMP_3: rospy.Publisher('/extruder/zone3/temperature', Float32, queue_size=10),
+            CAN_ID_STATUS_TEMP_4: rospy.Publisher('/extruder/zone4/temperature', Float32, queue_size=10),
         }
         
         self.actual_state_pubs = {
             CAN_ID_STATUS_STATE_1: rospy.Publisher('/extruder/zone1/actual_state', String, queue_size=10, latch=True),
             CAN_ID_STATUS_STATE_2: rospy.Publisher('/extruder/zone2/actual_state', String, queue_size=10, latch=True),
             CAN_ID_STATUS_STATE_3: rospy.Publisher('/extruder/zone3/actual_state', String, queue_size=10, latch=True),
+            CAN_ID_STATUS_STATE_4: rospy.Publisher('/extruder/zone4/actual_state', String, queue_size=10, latch=True),
         }
 
         self.error_state_pubs = {
             CAN_ID_STATUS_TEMP_1: rospy.Publisher('/extruder/zone1/error_state', String, queue_size=10, latch=True),
             CAN_ID_STATUS_TEMP_2: rospy.Publisher('/extruder/zone2/error_state', String, queue_size=10, latch=True),
             CAN_ID_STATUS_TEMP_3: rospy.Publisher('/extruder/zone3/error_state', String, queue_size=10, latch=True),
+            CAN_ID_STATUS_TEMP_4: rospy.Publisher('/extruder/zone4/error_state', String, queue_size=10, latch=True),
         }
         
         self.motor_state_pub = rospy.Publisher('/extruder/motor/actual_state', String, queue_size=10, latch=True)
@@ -81,15 +87,18 @@ class CANBridgeNode:
             CAN_ID_STATUS_TEMP_1: "Zone 1 Temp",
             CAN_ID_STATUS_TEMP_2: "Zone 2 Temp",
             CAN_ID_STATUS_TEMP_3: "Zone 3 Temp",
+            CAN_ID_STATUS_TEMP_4: "Zone 4 Temp",
             CAN_ID_STATUS_STATE_1: "Zone 1 State",
             CAN_ID_STATUS_STATE_2: "Zone 2 State",
             CAN_ID_STATUS_STATE_3: "Zone 3 State",
+            CAN_ID_STATUS_STATE_4: "Zone 4 State",
         }
         
         self.setpoint_can_ids = {
             "zone1": CAN_ID_CMD_SETPOINT_1,
             "zone2": CAN_ID_CMD_SETPOINT_2,
             "zone3": CAN_ID_CMD_SETPOINT_3,
+            "zone4": CAN_ID_CMD_SETPOINT_4,
         }
 
         # --- CAN Bus Setup ---
@@ -112,9 +121,11 @@ class CANBridgeNode:
         rospy.Subscriber('/extruder/zone1/state_cmd', String, lambda msg: self.ros_heater_state_callback(msg, "zone1"))
         rospy.Subscriber('/extruder/zone2/state_cmd', String, lambda msg: self.ros_heater_state_callback(msg, "zone2"))
         rospy.Subscriber('/extruder/zone3/state_cmd', String, lambda msg: self.ros_heater_state_callback(msg, "zone3"))
+        rospy.Subscriber('/extruder/zone4/state_cmd', String, lambda msg: self.ros_heater_state_callback(msg, "zone4"))
         rospy.Subscriber('/extruder/zone1/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone1"))
         rospy.Subscriber('/extruder/zone2/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone2"))
         rospy.Subscriber('/extruder/zone3/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone3"))
+        rospy.Subscriber('/extruder/zone4/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone4"))
 
         # --- ADDED: Start the heartbeat timer ---
         self.heartbeat_timer = rospy.Timer(rospy.Duration(1.0 / HEARTBEAT_RATE_HZ), self.send_heartbeat_callback)
