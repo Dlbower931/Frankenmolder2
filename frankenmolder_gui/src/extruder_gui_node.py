@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 
 import rospy
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, Int32, String
 import tkinter as tk
 from tkinter import ttk # Import the themed toolkit for tabs (Notebook)
 from threading import Thread, Lock
 import math
 import sys # Added for stderr
+import time
+from process_dashboard import ControlRoomDashboard, blank_data
+from extruder_page import ExtruderPage
+from servo_page import ServoTestPage, blank_servo
+import hmi
 
 # --- Configuration ---
 ZONE_COUNT = 4
 MIN_SETPOINT = 20.0
 MAX_SETPOINT = 350.0
+MAX_RPM = 100.0   # screw RPM limit for the number pad
 GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates
 
 # --- Shared State (Thread Safety) ---
@@ -20,9 +26,27 @@ latest_temps = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
 # --- RENAMED: This now stores the *true* state from the control node ---
 latest_actual_states = {f"zone{i+1}": "OFF" for i in range(ZONE_COUNT)}
 latest_motor_state = "STOPPED" # Shared state for the motor
+# Dashboard extras: echoed setpoints, sensor faults and link health
+latest_setpoints = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
+latest_error_states = {f"zone{i+1}": "OK" for i in range(ZONE_COUNT)}
+latest_motor_rpm_set = float('nan')
+last_temp_time = 0.0  # time.time() of the last temperature message from the ESP32
+LINK_TIMEOUT_S = 5.0
+# AC servo test status (from /servo/* topics)
+latest_servo = {"state": None, "flags": [], "actual_hz": None, "position": None,
+                "target_echo": None}
+last_servo_time = 0.0
+SERVO_LINK_TIMEOUT_S = 1.0  # ESP32 sends servo status every 100 ms
 
 # Lock to prevent race conditions when accessing shared data
 data_lock = Lock()
+
+def _key_style(face):
+    """Flat dark keys for the number pad, matching the lamp buttons' faces."""
+    return dict(bg=face, fg="#ffffff", activebackground=hmi.blend(face, "#ffffff", 0.15),
+                activeforeground="#ffffff", relief=tk.FLAT, bd=0, highlightthickness=1,
+                highlightbackground=hmi.C["edge"], cursor="hand2")
+
 
 class NumberPadPopup:
     """Custom number pad popup for touchscreen-friendly numeric input."""
@@ -41,6 +65,8 @@ class NumberPadPopup:
         self.popup.title("Enter Number")
         self.popup.attributes('-topmost', True)  # Keep on top
         self.popup.transient(parent)  # Remove minimize/maximize buttons
+        self.popup.configure(bg=hmi.C["panel"], highlightthickness=2,
+                             highlightbackground=hmi.C["accent"])
         
         # Set a fixed size for the popup to prevent scrunching (widened by 10px)
         popup_width = 410
@@ -59,15 +85,16 @@ class NumberPadPopup:
         self.input_str = tk.StringVar(value=initial_val)
         
         # Display field
-        display_frame = tk.Frame(self.popup, bg="white", bd=2, relief=tk.SUNKEN)
+        display_frame = tk.Frame(self.popup, bg=hmi.C["well"], bd=0,
+                                 highlightthickness=1, highlightbackground=hmi.C["edge"])
         display_frame.pack(padx=10, pady=10, fill=tk.X)
-        self.display_label = tk.Label(display_frame, textvariable=self.input_str, 
-                                      font=("Arial", 24, "bold"), bg="white", 
-                                      anchor="e", padx=10, pady=5)
+        self.display_label = tk.Label(display_frame, textvariable=self.input_str,
+                                      font=("DejaVu Sans Mono", 26, "bold"), bg=hmi.C["well"],
+                                      fg=hmi.C["setp"], anchor="e", padx=10, pady=5)
         self.display_label.pack(fill=tk.X)
         
         # Number pad buttons
-        button_frame = tk.Frame(self.popup)
+        button_frame = tk.Frame(self.popup, bg=hmi.C["panel"])
         button_frame.pack(padx=10, pady=10)
         
         # Button layout
@@ -80,15 +107,18 @@ class NumberPadPopup:
         for i, row in enumerate(buttons):
             for j, btn_text in enumerate(row):
                 # Make buttons larger for better touchscreen use
-                btn = tk.Button(button_frame, text=btn_text, font=("Arial", 24, "bold"),
-                               width=5, height=3, command=lambda t=btn_text: self.button_click(t))
+                face = hmi.FACE["blue"] if btn_text in ('C', '⌫') else hmi.FACE["neutral"]
+                btn = tk.Button(button_frame, text=btn_text, font=("DejaVu Sans", 22, "bold"),
+                               width=5, height=3, command=lambda t=btn_text: self.button_click(t),
+                               **_key_style(face))
                 btn.grid(row=i, column=j, padx=5, pady=5, sticky="nsew")
                 button_frame.grid_columnconfigure(j, weight=1, minsize=100)
             button_frame.grid_rowconfigure(i, weight=1, minsize=100)
         
         # Add large "Set Target" button spanning all columns at the bottom
-        set_btn = tk.Button(button_frame, text="Set Target", font=("Arial", 24, "bold"),
-                           height=3, command=lambda: self.button_click(self.confirm_text))
+        set_btn = tk.Button(button_frame, text="SET", font=("DejaVu Sans", 22, "bold"),
+                           height=3, command=lambda: self.button_click(self.confirm_text),
+                           **_key_style(hmi.FACE["start"]))
         set_btn.grid(row=3, column=0, columnspan=4, padx=5, pady=5, sticky="nsew")
         button_frame.grid_rowconfigure(3, weight=1, minsize=100)
         
@@ -167,28 +197,54 @@ class ExtruderGUI(tk.Frame):
         self.publishers = {}
         self.subscribers = {}
 
+        # --- Dark control-room theme for the window chrome ---
+        self.master.configure(bg=hmi.C["bg"])
+        style = ttk.Style(self.master)
+        style.theme_use("default")
+        style.configure("TNotebook", background=hmi.C["bg"], borderwidth=0, tabmargins=(4, 4, 4, 0))
+        style.configure("TNotebook.Tab", background=hmi.C["head"], foreground=hmi.C["dim"],
+                        padding=(22, 8), borderwidth=0, font=("DejaVu Sans", 12, "bold"))
+        style.map("TNotebook.Tab",
+                  background=[("selected", hmi.C["accent"])],
+                  foreground=[("selected", "#ffffff")])
+
         # --- Create the Tabbed Notebook ---
         self.notebook = ttk.Notebook(self.master)
 
-        # --- Tab 1: Dashboard ---
-        self.dashboard_frame = DashboardFrame(self.notebook)
+        # --- Tab 1: Dashboard (process overview) ---
+        self.dashboard_frame = ControlRoomDashboard(
+            self.notebook,
+            on_zone_click=lambda zone_id: self.notebook.select(self.extruder_frame),
+            on_motor_click=lambda: self.notebook.select(self.extruder_frame),
+            tick_ms=150)
         self.notebook.add(self.dashboard_frame, text='Dashboard')
 
-        # --- Tab 2: Heater Control (No Scrollbar) ---
-        # Create the HeaterControlFrame directly in the notebook
-        self.heater_frame = HeaterControlFrame(self.notebook, self) 
-        self.notebook.add(self.heater_frame, text='Extruder Heaters')
-        # --- End of Tab 2 Setup ---
+        # --- Tab 2: Extruder (heaters + screw drive) ---
+        self.extruder_frame = ExtruderPage(
+            self.notebook,
+            on_setpoint_tap=self.open_setpoint_pad,
+            on_zone_cmd=self.publish_state_cmd,
+            on_all_cmd=self.publish_all_zones_cmd,
+            on_rpm_tap=self.open_rpm_pad,
+            on_motor_cmd=self.publish_motor_cmd)
+        self.notebook.add(self.extruder_frame, text='Extruder')
 
-        # --- Tab 3: Motor Control ---
-        self.motor_frame = MotorControlFrame(self.notebook, self)
-        self.notebook.add(self.motor_frame, text='Extruder Motor')
+        # --- Tab 3: AC servo test ---
+        self.servo_frame = ServoTestPage(
+            self.notebook,
+            send_speed=self.publish_servo_speed,
+            send_cmd=self.publish_servo_cmd,
+            send_move=self.publish_servo_move,
+            ask_number=self.open_servo_number_pad)
+        self.notebook.add(self.servo_frame, text='Servo Test')
 
-        self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
+        self.notebook.pack(expand=True, fill='both', padx=0, pady=0)
 
         # --- Status Bar (Shared by all tabs) ---
         self.message_var = tk.StringVar(value="System Initialized.")
-        status_label = tk.Label(self.master, textvariable=self.message_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        status_label = tk.Label(self.master, textvariable=self.message_var, anchor=tk.W,
+                                bg=hmi.C["head"], fg=hmi.C["text"], bd=0, padx=8, pady=3,
+                                font=("DejaVu Sans Mono", 10))
         status_label.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 5))
 
         # Start the periodic GUI update (polling)
@@ -220,6 +276,16 @@ class ExtruderGUI(tk.Frame):
                     self.update_actual_state_callback, # Use the renamed callback
                     callback_args=zone_id
                 )
+
+                # Dashboard: echo of the setpoint (whoever publishes it) and sensor faults
+                self.subscribers[f"{zone_id}_setpoint_echo"] = rospy.Subscriber(
+                    f'/extruder/{zone_id}/setpoint', Float32,
+                    self.update_setpoint_callback, callback_args=zone_id
+                )
+                self.subscribers[f"{zone_id}_error_state"] = rospy.Subscriber(
+                    f'/extruder/{zone_id}/error_state', String,
+                    self.update_error_state_callback, callback_args=zone_id
+                )
             
             # --- Motor Publishers & Subscribers ---
             self.publishers["motor_set_rpm"] = rospy.Publisher('/extruder/motor/set_rpm', Float32, queue_size=1)
@@ -231,6 +297,23 @@ class ExtruderGUI(tk.Frame):
                 String,
                 self.update_motor_state_callback
             )
+            self.subscribers["motor_set_rpm_echo"] = rospy.Subscriber(
+                '/extruder/motor/set_rpm', Float32, self.update_motor_rpm_set_callback
+            )
+
+            # --- AC servo test ---
+            self.publishers["servo_command"] = rospy.Publisher('/servo/command', String, queue_size=5)
+            self.publishers["servo_target_hz"] = rospy.Publisher('/servo/target_hz', Float32, queue_size=5)
+            self.publishers["servo_accel"] = rospy.Publisher('/servo/accel', Float32, queue_size=5)
+            self.publishers["servo_move_pulses"] = rospy.Publisher('/servo/move_pulses', Int32, queue_size=5)
+            for topic, msg_type, key, conv in (
+                    ('/servo/state', String, "state", str),
+                    ('/servo/flags', String, "flags", lambda v: [f for f in v.split(",") if f]),
+                    ('/servo/actual_hz', Float32, "actual_hz", float),
+                    ('/servo/position', Int32, "position", int),
+                    ('/servo/target_echo_hz', Float32, "target_echo", float)):
+                self.subscribers[f"servo_{key}"] = rospy.Subscriber(
+                    topic, msg_type, self.update_servo_callback, callback_args=(key, conv))
 
             rospy.loginfo("GUI: ROS Comms Initialized.")
             self.message_var.set("ROS Connection Established.")
@@ -248,7 +331,9 @@ class ExtruderGUI(tk.Frame):
         """ROS thread callback: Safely update shared temp data."""
         try:
             with data_lock:
+                global last_temp_time
                 latest_temps[zone_id] = temp_msg.data
+                last_temp_time = time.time()
         except Exception as e:
             rospy.logerr(f"R_TEMP_CB ({zone_id}): Error storing temp data: {e}")
 
@@ -270,14 +355,143 @@ class ExtruderGUI(tk.Frame):
         except Exception as e:
             rospy.logerr(f"R_MOTOR_CB: Error storing motor state: {e}")
 
+    def update_setpoint_callback(self, msg, zone_id):
+        with data_lock:
+            latest_setpoints[zone_id] = msg.data
+
+    def update_error_state_callback(self, msg, zone_id):
+        with data_lock:
+            latest_error_states[zone_id] = msg.data
+
+    def update_motor_rpm_set_callback(self, msg):
+        with data_lock:
+            global latest_motor_rpm_set
+            latest_motor_rpm_set = msg.data
+
+    def update_servo_callback(self, msg, args):
+        key, conv = args
+        with data_lock:
+            global last_servo_time
+            latest_servo[key] = conv(msg.data)
+            last_servo_time = time.time()
+
+    def build_dashboard_data(self):
+        """Snapshot the shared ROS state into the dashboard's data format."""
+        nan_to_none = lambda v: None if (v is None or math.isnan(v)) else v
+        d = blank_data()
+        with data_lock:
+            for i in range(ZONE_COUNT):
+                zone_id = f"zone{i+1}"
+                fault = latest_error_states.get(zone_id) == "FAULT"
+                d["zones"][zone_id] = {
+                    # NaN is drawn as FAULT, None as "---" (no reading yet)
+                    "act": float('nan') if fault else nan_to_none(latest_temps[zone_id]),
+                    "set": nan_to_none(latest_setpoints[zone_id]),
+                    "state": "FAULT" if fault else latest_actual_states[zone_id],
+                }
+            motor_on = latest_motor_state in ("ON", "RUNNING")
+            rpm_set = nan_to_none(latest_motor_rpm_set)
+            d["motor"] = {
+                "state": "ON" if motor_on else "OFF",
+                "rpm_set": rpm_set,
+                # No speed feedback from the drive yet: show the commanded speed while on
+                "rpm_act": (rpm_set or 0.0) if motor_on else 0.0,
+                "load": None,
+            }
+            d["can_ok"] = (time.time() - last_temp_time) < LINK_TIMEOUT_S
+            servo = blank_servo()
+            servo.update({k: (list(v) if isinstance(v, list) else v)
+                          for k, v in latest_servo.items()})
+            servo["link"] = (time.time() - last_servo_time) < SERVO_LINK_TIMEOUT_S
+            d["servo"] = servo
+        return d
+
+    # --- Commands from the Extruder page ---
+    def open_setpoint_pad(self, zone_id):
+        with data_lock:
+            current = latest_setpoints[zone_id]
+        var = tk.StringVar(value="" if math.isnan(current) else f"{current:.0f}")
+        NumberPadPopup(self.master, self.extruder_frame, var,
+                       min_val=MIN_SETPOINT, max_val=MAX_SETPOINT, confirm_text="Set",
+                       on_confirm=lambda v: self.publish_setpoint(zone_id, v))
+
+    def open_rpm_pad(self):
+        with data_lock:
+            current = latest_motor_rpm_set
+        var = tk.StringVar(value="" if math.isnan(current) else f"{current:.0f}")
+        NumberPadPopup(self.master, self.extruder_frame, var, min_val=0.0, max_val=MAX_RPM,
+                       confirm_text="Set", on_confirm=self.publish_set_rpm)
+
+    def _publish(self, key, msg, ok_text):
+        pub = self.publishers.get(key)
+        if not pub:
+            rospy.logerr(f"GUI: publisher '{key}' not found.")
+            self.message_var.set(f"Error: no publisher for {key} (ROS not connected?)")
+            return False
+        try:
+            pub.publish(msg)
+            rospy.loginfo(f"GUI: {ok_text}")
+            self.message_var.set(ok_text)
+            return True
+        except Exception as e:
+            rospy.logerr(f"GUI: publish {key} failed: {e}")
+            self.message_var.set(f"Error sending {key}: {e}")
+            return False
+
+    def publish_setpoint(self, zone_id, value):
+        value = float(value)
+        if not (MIN_SETPOINT <= value <= MAX_SETPOINT):
+            self.message_var.set(f"{zone_id}: setpoint must be {MIN_SETPOINT:.0f}-{MAX_SETPOINT:.0f} °C")
+            return
+        if self._publish(f"{zone_id}_setpoint", Float32(value),
+                         f"{zone_id}: setpoint {value:.1f} °C sent."):
+            self.extruder_frame.log(f"Z{zone_id[-1]} SET {value:.0f}", "cmd")
+
+    def publish_state_cmd(self, zone_id, command):
+        """command is 'ON' or 'OFF'."""
+        self._publish(f"{zone_id}_state_cmd", String(command), f"{zone_id}: {command} sent.")
+
+    def publish_all_zones_cmd(self, command):
+        for i in range(ZONE_COUNT):
+            self.publish_state_cmd(f"zone{i+1}", command)
+
+    def publish_set_rpm(self, value):
+        value = float(value)
+        if self._publish("motor_set_rpm", Float32(value), f"Screw RPM {value:.1f} sent."):
+            self.extruder_frame.log(f"RPM SET {value:.1f}", "cmd")
+
+    def publish_motor_cmd(self, command):
+        """command is 'ON' (start) or 'OFF' (stop)."""
+        self._publish("motor_state_cmd", String(command),
+                      f"Motor {'START' if command == 'ON' else 'STOP'} sent.")
+
+    # --- Commands from the Servo Test page ---
+    def open_servo_number_pad(self, current, lo, hi, apply):
+        var = tk.StringVar(value=f"{current:.0f}")
+        NumberPadPopup(self.master, self.servo_frame, var, min_val=lo, max_val=hi,
+                       confirm_text="Set", on_confirm=apply)
+
+    def publish_servo_speed(self, signed_hz, accel):
+        self._publish("servo_accel", Float32(float(accel)), f"Servo accel {accel:.0f} Hz/s sent.")
+        self._publish("servo_target_hz", Float32(float(signed_hz)),
+                      f"Servo target {signed_hz:+.0f} Hz sent.")
+
+    def publish_servo_cmd(self, command):
+        """command: RUN, STOP, ESTOP or ZERO."""
+        self._publish("servo_command", String(command), f"Servo {command} sent.")
+
+    def publish_servo_move(self, pulses):
+        self._publish("servo_move_pulses", Int32(int(pulses)), f"Servo move {pulses:+d} pulses sent.")
+
     # --- GUI Polling Function (Read shared data) ---
     def poll_ros_updates(self):
         """GUI thread loop: Safely read shared data and update all frames."""
         try:
             # Pass data to each frame to update its widgets
-            self.heater_frame.update_gui_widgets()
-            self.motor_frame.update_gui_widgets()
-            # self.dashboard_frame.update_gui_widgets() # Add when dashboard has data
+            data = self.build_dashboard_data()
+            self.dashboard_frame.set_data(data)
+            self.extruder_frame.set_data(data)
+            self.servo_frame.set_data(data)
 
         except Exception as e:
             err_msg = f"G_POLL: Error during GUI update: {e}"
@@ -286,289 +500,6 @@ class ExtruderGUI(tk.Frame):
 
         # Reschedule the next check
         self.master.after(GUI_POLL_INTERVAL_MS, self.poll_ros_updates)
-class DashboardFrame(tk.Frame):
-    """A blank frame for the main dashboard/overview page."""
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, **kwargs)
-        
-        label = tk.Label(self, text="Main Dashboard (Overview)", font=("Arial", 24))
-        label.pack(padx=50, pady=50)
-        # Add high-level status widgets here later
-
-    def update_gui_widgets(self):
-        # Update dashboard widgets here
-        pass
-
-
-class HeaterControlFrame(tk.Frame):
-    """The frame containing the 3-Zone Heater controls."""
-    def __init__(self, parent, main_app, **kwargs):
-        # Parent is now the Notebook
-        super().__init__(parent, **kwargs) 
-        self.main_app = main_app # Reference to main app to access publishers
-
-        # --- Tkinter Variables (Local to this frame) ---
-        self.current_temps = {}
-        self.target_setpoints = {}
-        self.current_mode = {} # This will now reflect ACTUAL state
-        self.mode_labels = {} # Store refs to labels for coloring
-        self.setpoint_buttons = {} # Store refs to setpoint buttons
-
-        # --- Main Barrel Frame ---
-        barrel_frame = tk.Frame(self, bd=2, relief=tk.SUNKEN)
-        barrel_frame.pack(padx=8, pady=8, fill=tk.X, expand=True)
-
-        # --- Create Controls for Each Zone ---
-        for i in range(ZONE_COUNT):
-            zone_id = f"zone{i+1}"
-            
-            # Init Tkinter vars
-            self.current_temps[zone_id] = tk.StringVar(value="--")
-            # Use StringVar for setpoint so button can display formatted text
-            self.target_setpoints[zone_id] = tk.StringVar(value="30.0")
-            self.current_mode[zone_id] = tk.StringVar(value="OFF") # Displays ACTUAL state
-
-            zone_frame = tk.LabelFrame(barrel_frame, text=f"Zone {i+1}", padx=8, pady=8, font=("Arial", 11, "bold"))
-            zone_frame.grid(row=0, column=i, padx=4, pady=4, sticky="nsew")
-            barrel_frame.grid_columnconfigure(i, weight=1) # Make zones expand equally
-
-            # Temperature Display
-            tk.Label(zone_frame, text="Temp:", font=("Arial", 10)).grid(row=0, column=0, sticky="w")
-            temp_label = tk.Label(zone_frame, textvariable=self.current_temps[zone_id], font=("Arial", 14, "bold"))
-            temp_label.grid(row=0, column=1, columnspan=2, sticky="e")
-            tk.Label(zone_frame, text="°C", font=("Arial", 10)).grid(row=0, column=3, sticky="w")
-
-            # Actual Mode Display
-            tk.Label(zone_frame, text="Mode:", font=("Arial", 10)).grid(row=1, column=0, sticky="w")
-            mode_label = tk.Label(zone_frame, textvariable=self.current_mode[zone_id], font=("Arial", 10, "italic"))
-            mode_label.grid(row=1, column=1, columnspan=3, sticky="e")
-            self.mode_labels[zone_id] = mode_label # Store ref for coloring
-
-            # Setpoint Control (Stacked)
-            tk.Label(zone_frame, text="Setpoint (°C):", font=("Arial", 10)).grid(row=2, column=0, columnspan=4, pady=(8, 0), sticky="w")
-            # Create button that displays current setpoint value and opens number pad when clicked
-            setpoint_btn = tk.Button(zone_frame, textvariable=self.target_setpoints[zone_id], 
-                                   font=("Arial", 14, "bold"), width=12, height=1,
-                                   command=lambda zid=zone_id: self.open_number_pad(zid))
-            setpoint_btn.grid(row=3, column=0, columnspan=4, pady=4, ipady=6, sticky="ew")
-            self.setpoint_buttons[zone_id] = setpoint_btn
-            # Format the button text to show value with decimal
-            self.update_setpoint_button_text(zone_id)
-            # Removed "Set Target" button - it's now in the number pad popup
-
-            # State Control Buttons (Stacked OFF/START)
-            tk.Label(zone_frame, text="Commands:", font=("Arial", 10)).grid(row=5, column=0, columnspan=4, pady=(12, 0), sticky="w")
-            button_frame = tk.Frame(zone_frame)
-            button_frame.grid(row=6, column=0, columnspan=4, pady=(4, 4), sticky="ew")
-
-            off_button = tk.Button(button_frame, text="OFF", bg="red", fg="white", font=("Arial", 10, "bold"), height=1,
-                                   command=lambda zid=zone_id: self.publish_state_cmd(zid, "OFF"))
-            off_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
-
-            start_button = tk.Button(button_frame, text="START", bg="#00008B", fg="white", font=("Arial", 10, "bold"), height=1,
-                                     command=lambda zid=zone_id: self.publish_state_cmd(zid, "ON"))
-            start_button.pack(side=tk.TOP, fill=tk.X, pady=2, expand=True)
-
-    def update_gui_widgets(self):
-        """Update all widgets in this frame with data from shared state."""
-        with data_lock:
-            for i in range(ZONE_COUNT):
-                zone_id = f"zone{i+1}"
-                
-                # Update Temp
-                temp_val = latest_temps.get(zone_id, float('nan'))
-                if not math.isnan(temp_val):
-                    self.current_temps[zone_id].set(f"{temp_val:.1f}")
-                else:
-                    self.current_temps[zone_id].set("--")
-                
-                # --- FIX: Update Mode from the /actual_state topic data ---
-                mode = latest_actual_states.get(zone_id, "OFF")
-                self.current_mode[zone_id].set(mode)
-                
-                # Update Color based on the actual state
-                mode_label = self.mode_labels.get(zone_id)
-                if mode_label:
-                    if mode == "OFF": mode_label.config(fg="red")
-                    elif mode == "HEATING": mode_label.config(fg="orange")
-                    elif mode == "PID": mode_label.config(fg="green")
-                    else: mode_label.config(fg="black") # Default/Unknown
-
-    def update_setpoint_button_text(self, zone_id):
-        """Update the button text to show formatted setpoint value."""
-        value = self.target_setpoints[zone_id].get()
-        self.target_setpoints[zone_id].set(value)  # Trigger update
-        # The button textvariable will automatically update
-    
-    def open_number_pad(self, zone_id):
-        """Open number pad popup for setpoint entry."""
-        # Create a dummy entry widget for positioning (won't be visible)
-        entry_ref = self.setpoint_buttons[zone_id]
-        NumberPadPopup(
-            self.main_app.master,
-            entry_ref,
-            self.target_setpoints[zone_id],
-            min_val=MIN_SETPOINT,
-            max_val=MAX_SETPOINT,
-            confirm_text="Set",
-            callback=lambda v: self.update_setpoint_button_text(zone_id),
-            on_confirm=lambda v: self.publish_setpoint(zone_id)  # Auto-publish when Set Target is pressed
-        )
-    
-    def publish_setpoint(self, zone_id):
-        """Validate and publish the setpoint."""
-        pub = self.main_app.publishers.get(f"{zone_id}_setpoint")
-        if not pub:
-            rospy.logerr(f"Setpoint Publisher for {zone_id} not found.")
-            return
-
-        try:
-            # Get value as float from StringVar
-            setpoint_str = self.target_setpoints[zone_id].get()
-            setpoint_value = float(setpoint_str)
-            
-            if not (MIN_SETPOINT <= setpoint_value <= MAX_SETPOINT):
-                raise ValueError(f"Setpoint must be between {MIN_SETPOINT} and {MAX_SETPOINT}°C.")
-
-            # Explicitly create Float32 message and set data field
-            msg = Float32()
-            msg.data = float(setpoint_value)
-            pub.publish(msg)
-            rospy.loginfo(f"GUI published setpoint for {zone_id}: {setpoint_value} (msg.data={msg.data})")
-            self.main_app.message_var.set(f"{zone_id}: Setpoint {setpoint_value:.1f}°C accepted.")
-            
-            # --- Removed automatic HEATING command ---
-            # User must explicitly click START to begin heating
-
-        except ValueError as e:
-             rospy.logwarn(f"GUI Validation Error ({zone_id}): {e}")
-             self.main_app.message_var.set(f"Error ({zone_id}): {e}")
-        except Exception as e:
-             rospy.logwarn(f"GUI Error ({zone_id}): {e}")
-             self.main_app.message_var.set(f"Error ({zone_id}): {e}")
-
-    def publish_state_cmd(self, zone_id, state_command):
-        """Publish the state command ('OFF', 'ON')."""
-        pub = self.main_app.publishers.get(f"{zone_id}_state_cmd")
-        if not pub:
-            rospy.logerr(f"State Command Publisher for {zone_id} not found.")
-            return
-
-        try:
-            # Send the command as-is (ON or OFF)
-            msg = String(state_command)
-            pub.publish(msg)
-            rospy.loginfo(f"GUI published state_cmd for {zone_id}: {state_command}")
-            self.main_app.message_var.set(f"{zone_id}: {state_command} command sent.")
-
-        except Exception as e:
-            rospy.logerr(f"GUI publish_state_cmd Error ({zone_id}): {e}")
-class MotorControlFrame(tk.Frame):
-    """The frame containing the Extruder Motor controls."""
-    def __init__(self, parent, main_app, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.main_app = main_app
-
-        # --- Tkinter Variables ---
-        self.target_rpm = tk.DoubleVar(value=10.0)
-        self.actual_motor_state = tk.StringVar(value="STOPPED")
-
-        # --- Layout ---
-        control_frame = tk.LabelFrame(self, text="Motor Control", padx=20, pady=20, font=("Arial", 14, "bold"))
-        control_frame.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
-
-        # State Display
-        tk.Label(control_frame, text="Actual State:", font=("Arial", 14)).grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        self.state_label = tk.Label(control_frame, textvariable=self.actual_motor_state, font=("Arial", 18, "bold"), fg="red")
-        self.state_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-        
-        # RPM Control
-        tk.Label(control_frame, text="Target RPM:", font=("Arial", 14)).grid(row=1, column=0, padx=10, pady=10, sticky="w")
-        # Create button that displays current RPM value and opens number pad when clicked
-        self.rpm_btn = tk.Button(control_frame, textvariable=self.target_rpm, 
-                                font=("Arial", 20, "bold"), width=8, height=2,
-                                command=self.open_number_pad_rpm)
-        self.rpm_btn.grid(row=1, column=1, padx=10, pady=10, ipady=8)
-        rpm_button = tk.Button(control_frame, text="Set RPM", font=("Arial", 14, "bold"),
-                               command=self.publish_set_rpm)
-        rpm_button.grid(row=1, column=2, padx=10, pady=10, ipady=8)
-
-        # Command Buttons
-        button_frame = tk.Frame(control_frame)
-        button_frame.grid(row=2, column=0, columnspan=3, pady=20)
-        
-        start_button = tk.Button(button_frame, text="START MOTOR", bg="green", fg="white", font=("Arial", 14, "bold"), height=2, width=15,
-                                 command=lambda: self.publish_motor_cmd("ON"))
-        start_button.pack(side=tk.LEFT, padx=10)
-
-        stop_button = tk.Button(button_frame, text="STOP MOTOR", bg="red", fg="white", font=("Arial", 14, "bold"), height=2, width=15,
-                                command=lambda: self.publish_motor_cmd("OFF"))
-        stop_button.pack(side=tk.LEFT, padx=10)
-
-    def update_gui_widgets(self):
-        """Update all widgets in this frame with data from shared state."""
-        with data_lock:
-            state = latest_motor_state
-            self.actual_motor_state.set(state)
-            
-            # Update color based on state
-            if state == "RUNNING" or state == "ON": # Accept "ON" as running
-                self.state_label.config(fg="green")
-            elif state == "STOPPED" or state == "OFF": # Accept "OFF" as stopped
-                self.state_label.config(fg="red")
-            elif state == "FAULT":
-                self.state_label.config(fg="orange")
-            else:
-                self.state_label.config(fg="black")
-
-    def open_number_pad_rpm(self):
-        """Open number pad popup for RPM entry."""
-        NumberPadPopup(
-            self.main_app.master,
-            self.rpm_btn,
-            self.target_rpm,
-            min_val=0.0,
-            max_val=100.0  # Reasonable max for RPM
-        )
-    
-    def publish_set_rpm(self):
-        """Validate and publish the target RPM."""
-        pub = self.main_app.publishers.get("motor_set_rpm")
-        if not pub:
-            rospy.logerr("Motor Set RPM Publisher not found.")
-            return
-
-        try:
-            rpm_value = self.target_rpm.get()
-            # Add validation as needed
-            if rpm_value < 0:
-                raise ValueError("RPM cannot be negative.")
-            
-            msg = Float32()
-            msg.data = float(rpm_value)
-            pub.publish(msg)
-            rospy.loginfo(f"GUI published motor_set_rpm: {rpm_value}")
-            self.main_app.message_var.set(f"Motor RPM target {rpm_value} sent.")
-
-        except Exception as e:
-            rospy.logwarn(f"GUI Validation Error (Motor): {e}")
-            self.main_app.message_var.set(f"Error (Motor): {e}")
-
-    def publish_motor_cmd(self, command):
-        """Publish the motor command ('ON', 'OFF')."""
-        pub = self.main_app.publishers.get("motor_state_cmd")
-        if not pub:
-            rospy.logerr("Motor State Command Publisher not found.")
-            return
-
-        try:
-            msg = String(command)
-            pub.publish(msg)
-            rospy.loginfo(f"GUI published motor_state_cmd: {command}")
-            user_action = "START" if command == "ON" else "STOP"
-            self.main_app.message_var.set(f"Motor {user_action} command sent.")
-        except Exception as e:
-            rospy.logerr(f"GUI publish_motor_cmd Error: {e}")
 def ros_spin_thread(app):
     """Handles all ROS communication in a separate thread."""
     rospy.loginfo("GUI: ROS spin thread started.")

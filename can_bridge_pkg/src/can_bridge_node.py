@@ -12,7 +12,7 @@ import can
 import struct # Used to unpack/pack bytes
 import os
 import sys
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, Int32, String
 # from can_msgs.msg import Frame # Removed - using String for debug
 
 # --- Configuration ---
@@ -51,6 +51,36 @@ CAN_ID_CMD_MOTOR_STATE = 0x220
 # (string) "RPMxx.x"
 CAN_ID_CMD_MOTOR_RPM = 0x221
 
+# --- AC servo test (binary, little-endian; see esp32_firmware/ac_servo.h) ---
+CAN_ID_CMD_SERVO = 0x230         # [u8 cmd] 1=RUN 2=STOP 3=ESTOP 4=ZERO
+CAN_ID_CMD_SERVO_SPEED = 0x231   # [f32 target_hz signed][f32 accel Hz/s]
+CAN_ID_CMD_SERVO_MOVE = 0x232    # [i32 pulses signed][f32 hz]
+CAN_ID_STATUS_SERVO = 0x130      # [u8 state][u8 flags][2 pad][f32 actual_hz signed]
+CAN_ID_STATUS_SERVO_POS = 0x131  # [i32 position][i32 target_hz echo]
+SERVO_CMD_CODES = {"RUN": 1, "STOP": 2, "ESTOP": 3, "ZERO": 4}
+SERVO_STATES = {0: "IDLE", 1: "RUNNING", 2: "MOVING", 3: "STOPPING", 4: "FAULT"}
+SERVO_FLAG_NAMES = ((0x01, "ALARM"), (0x02, "WATCHDOG"), (0x04, "AT_SPEED"), (0x08, "ALARM_INPUT"))
+
+
+def pack_servo_speed(target_hz, accel):
+    return list(struct.pack('<ff', float(target_hz), float(accel)))
+
+
+def pack_servo_move(pulses, hz):
+    return list(struct.pack('<if', int(pulses), float(hz)))
+
+
+def unpack_servo_status(data):
+    """-> (state_name, [flag names], actual_hz)"""
+    state, flags, actual_hz = struct.unpack('<BB2xf', bytes(data[:8]))
+    names = [name for bit, name in SERVO_FLAG_NAMES if flags & bit]
+    return SERVO_STATES.get(state, f"UNKNOWN{state}"), names, actual_hz
+
+
+def unpack_servo_pos(data):
+    """-> (position_pulses, target_hz_echo)"""
+    return struct.unpack('<ii', bytes(data[:8]))
+
 
 class CANBridgeNode:
     def __init__(self):
@@ -81,6 +111,16 @@ class CANBridgeNode:
         self.motor_state_pub = rospy.Publisher('/extruder/motor/actual_state', String, queue_size=10, latch=True)
         # self.motor_rpm_pub = rospy.Publisher('/extruder/motor/actual_rpm', Float32, queue_size=10)
         self.raw_can_pub = rospy.Publisher('/can_bus_raw_string', String, queue_size=50)
+
+        # AC servo test status (CAN -> ROS)
+        self.servo_state_pub = rospy.Publisher('/servo/state', String, queue_size=10, latch=True)
+        self.servo_flags_pub = rospy.Publisher('/servo/flags', String, queue_size=10, latch=True)
+        self.servo_hz_pub = rospy.Publisher('/servo/actual_hz', Float32, queue_size=10)
+        self.servo_pos_pub = rospy.Publisher('/servo/position', Int32, queue_size=10)
+        self.servo_target_echo_pub = rospy.Publisher('/servo/target_echo_hz', Float32, queue_size=10)
+        # Last speed settings; 0x231 always carries both
+        self.servo_target_hz = 0.0
+        self.servo_accel = 20000.0
 
         # Helper for logging
         self.zone_names = {
@@ -126,6 +166,12 @@ class CANBridgeNode:
         rospy.Subscriber('/extruder/zone2/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone2"))
         rospy.Subscriber('/extruder/zone3/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone3"))
         rospy.Subscriber('/extruder/zone4/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone4"))
+
+        # AC servo test (ROS -> CAN)
+        rospy.Subscriber('/servo/command', String, self.ros_servo_command_callback)
+        rospy.Subscriber('/servo/target_hz', Float32, self.ros_servo_target_callback)
+        rospy.Subscriber('/servo/accel', Float32, self.ros_servo_accel_callback)
+        rospy.Subscriber('/servo/move_pulses', Int32, self.ros_servo_move_callback)
 
         # --- ADDED: Start the heartbeat timer ---
         self.heartbeat_timer = rospy.Timer(rospy.Duration(1.0 / HEARTBEAT_RATE_HZ), self.send_heartbeat_callback)
@@ -189,6 +235,32 @@ class CANBridgeNode:
             self.send_can_float(can_id, setpoint_value)
         else:
             rospy.logwarn(f"ROS->CAN: No CAN ID defined for setpoint on {zone_id}")
+
+    # --- AC servo test (ROS -> CAN) ---
+    def ros_servo_command_callback(self, msg):
+        code = SERVO_CMD_CODES.get(msg.data.strip().upper())
+        if code is None:
+            rospy.logwarn(f"ROS->CAN: unknown servo command '{msg.data}' (use RUN/STOP/ESTOP/ZERO)")
+            return
+        rospy.loginfo(f"ROS->CAN: servo {msg.data}")
+        self.send_can_bytes(CAN_ID_CMD_SERVO, [code])
+
+    def _send_servo_speed(self):
+        self.send_can_bytes(CAN_ID_CMD_SERVO_SPEED,
+                            pack_servo_speed(self.servo_target_hz, self.servo_accel))
+
+    def ros_servo_target_callback(self, msg):
+        self.servo_target_hz = float(msg.data)
+        self._send_servo_speed()
+
+    def ros_servo_accel_callback(self, msg):
+        self.servo_accel = float(msg.data)
+        self._send_servo_speed()
+
+    def ros_servo_move_callback(self, msg):
+        hz = abs(self.servo_target_hz) or 1000.0
+        rospy.loginfo(f"ROS->CAN: servo move {msg.data} pulses at {hz:.0f} Hz")
+        self.send_can_bytes(CAN_ID_CMD_SERVO_MOVE, pack_servo_move(msg.data, hz))
 
     # --- CAN Sending Methods ---
     
@@ -293,6 +365,17 @@ class CANBridgeNode:
                     except Exception as e:
                         rospy.logwarn(f"CAN->ROS ({zone_name}): Error decoding string: {e}")
                 
+                # --- AC servo test status ---
+                elif message.arbitration_id == CAN_ID_STATUS_SERVO and message.dlc == 8:
+                    state, flags, actual_hz = unpack_servo_status(message.data)
+                    self.servo_state_pub.publish(String(state))
+                    self.servo_flags_pub.publish(String(",".join(flags)))
+                    self.servo_hz_pub.publish(Float32(actual_hz))
+                elif message.arbitration_id == CAN_ID_STATUS_SERVO_POS and message.dlc == 8:
+                    position, target_echo = unpack_servo_pos(message.data)
+                    self.servo_pos_pub.publish(Int32(position))
+                    self.servo_target_echo_pub.publish(Float32(target_echo))
+
                 # --- Handle Motor State Status Messages ---
                 elif message.arbitration_id == CAN_ID_STATUS_MOTOR_STATE:
                     try:

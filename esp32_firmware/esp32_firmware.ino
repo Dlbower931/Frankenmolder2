@@ -15,12 +15,14 @@
  * 1. ESP32-TWAI-CAN (by rdupuis)
  * 2. Adafruit MAX6675 Library (by Adafruit)
  * 3. PID (by Brett Beauregard)
+ * 4. FastAccelStepper (by gin66), tested with 2.0.1 - AC servo pulse/direction, see ac_servo.h
  */
 
 #include <Arduino.h>
 #include <ESP32-TWAI-CAN.hpp>
 #include <max6675.h> // Adafruit's library
 #include <PID_v1.h>  // The PID library
+#include "ac_servo.h" // AC servo test control (CAN 0x230-0x232 / 0x130-0x131)
 
 // --- Pin Definitions ---
 // CAN
@@ -172,6 +174,8 @@ void checkCanMessages() {
     if (ESP32Can.readFrame(rxFrame)) {
         // --- NEW: Reset CAN watchdog timer on *any* received message ---
         lastCanMessageTime = millis();
+        acServoNoteRx();
+        if (acServoHandleFrame(rxFrame)) return;  // AC servo commands
         
         // Serial.printf("CAN RX ID 0x%X, DLC %d\n", rxFrame.identifier, rxFrame.data_length_code);
         
@@ -513,6 +517,9 @@ void setup() {
     // Initialize watchdog timer
     lastCanMessageTime = millis();
 
+    // 2b. AC servo pulse/direction generator
+    acServoSetup();
+
     // 3. Configure PID Controllers
     for (int i = 0; i < NUM_ZONES; i++) {
         // We pass pointers to the global variables
@@ -572,6 +579,9 @@ void loop() {
         prevServoMillis = currentMillis;
         updateServoSweep();
     }
+
+    // 5b. AC servo: safety checks + status frames
+    acServoUpdate();
 
     // 6. Send status reports periodically
     if (currentMillis - prevStatusMillis >= STATUS_REPORT_PERIOD_MS) {

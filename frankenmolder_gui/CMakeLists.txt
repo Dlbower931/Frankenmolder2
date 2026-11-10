@@ -11,5 +11,9 @@ catkin_package()
 # Install Python scripts
 install(PROGRAMS
   src/extruder_gui_node.py
+  src/process_dashboard.py
+  src/extruder_page.py
+  src/hmi.py
+  src/servo_page.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
