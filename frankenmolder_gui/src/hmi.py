@@ -14,8 +14,10 @@ import tkinter as tk
 import tkinter.font as tkfont
 from collections import deque
 
-# Virtual drawing space; everything is scaled to fit the real window.
-VW, VH = 1000, 600
+# Virtual drawing space; everything is scaled to fit the real window. 1000x525 matches
+# the 7" 800x480 touchscreen once the tab bar and status bar are taken (800x420, scale 0.8),
+# so a text size of 13 here is ~10 px on the screen - treat that as the minimum.
+VW, VH = 1000, 525
 TEMP_MAX = 350.0
 RPM_MAX = 60.0
 PSI_MAX = 5000.0
@@ -23,10 +25,10 @@ PSI_MAX = 5000.0
 C = {
     "bg": "#0a0e13", "grid": "#111821", "panel": "#111821", "head": "#17212c",
     "edge": "#263345", "accent": "#3d8bd1", "well": "#0b1118",
-    "dim": "#5d6d80", "text": "#b9c6d4", "value": "#eaf2fa", "setp": "#4fc3f7",
+    "dim": "#8494a8", "text": "#b9c6d4", "value": "#eaf2fa", "setp": "#4fc3f7",
     "steel": "#2c3846", "steel_hi": "#4a5d72", "bore": "#0d1218",
     "ok": "#3fb950", "warn": "#e3a008", "alarm": "#f85149", "off": "#36404c",
-    "plastic": "#f0883e", "nowire": "#2f3a47",
+    "plastic": "#f0883e", "nowire": "#3a4757",
 }
 STATE_COLORS = {"OFF": C["off"], "HEATING": C["warn"], "HEAT": C["warn"],
                 "PID": C["ok"], "FAULT": C["alarm"]}
@@ -73,6 +75,9 @@ def temp_color(t):
 
 class HmiCanvas(tk.Frame):
     TICK_MS = 100  # redraw rate
+    VW, VH = VW, VH  # virtual size; a page may override to match its screen's aspect
+    HDR = 28                                       # panel header height
+    T_TITLE, T_CHIP, T_LABEL, T_UNIT = 15, 13, 14, 13
 
     def __init__(self, parent, tick_ms=None, **kw):
         super().__init__(parent, bg=C["bg"], **kw)
@@ -110,9 +115,9 @@ class HmiCanvas(tk.Frame):
         self.events.appendleft((time.strftime("%H:%M:%S"), msg, level))
 
     def _on_resize(self, ev):
-        self.s = min(ev.width / VW, ev.height / VH)
-        self.ox = (ev.width - VW * self.s) / 2
-        self.oy = (ev.height - VH * self.s) / 2
+        self.s = min(ev.width / self.VW, ev.height / self.VH)
+        self.ox = (ev.width - self.VW * self.s) / 2
+        self.oy = (ev.height - self.VH * self.s) / 2
         self.render()
 
     def _hit(self, ev):
@@ -179,38 +184,58 @@ class HmiCanvas(tk.Frame):
                            width=max(1, width * self.s))
 
     # ------------------------------------------------------------ widgets
-    def chip(self, xr, yc, txt, color, fg="#0a0e13", size=9):
+    def chip(self, xr, yc, txt, color, fg="#0a0e13", size=9, h=7):
         w = len(txt) * size * 0.64 + 10
-        self.rect(xr - w, yc - 7, xr, yc + 7, fill=color, outline="")
+        self.rect(xr - w, yc - h, xr, yc + h, fill=color, outline="")
         self.text(xr - w / 2, yc, txt, size, mono=True, bold=True, fill=fg)
 
     def panel(self, x0, y0, x1, y1, title, chip=None, chip_color=None, wired=True, hot=None):
-        self.rect(x0, y0, x1, y1, fill=C["panel"], outline=C["edge"])
-        self.rect(x0, y0, x1, y0 + 18, fill=C["head"], outline=C["edge"])
+        """Framed panel with a header. chip=False suppresses the NOT WIRED chip (when the
+        title leaves no room for it); hot makes the whole panel a touch target."""
+        pressed = hot is not None and self.is_pressed(x0, y0, x1, y1)
+        self.rect(x0, y0, x1, y1, fill="#1a2634" if pressed else C["panel"],
+                  outline=C["accent"] if pressed else C["edge"])
+        hy = y0 + self.HDR / 2
+        self.rect(x0, y0, x1, y0 + self.HDR, fill=C["head"], outline=C["edge"])
         acc = C["accent"] if wired else C["nowire"]
-        L = 8
+        L = 10
         for cx, cy, dx, dy in ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)):
             self.line(cx, cy + dy * L, cx, cy, cx + dx * L, cy, fill=acc, width=2)
-        self.text(x0 + 8, y0 + 9, title, 10, bold=True, anchor="w",
+        self.text(x0 + 8, hy, title, self.T_TITLE, bold=True, anchor="w",
                   fill=C["text"] if wired else C["dim"])
         if not wired:
-            self.chip(x1 - 5, y0 + 9, "NOT WIRED", C["nowire"], fg=C["dim"], size=8)
+            if chip is not False:
+                self.chip(x1 - 5, hy, "NOT WIRED", C["nowire"], fg=C["text"], size=12, h=10)
         elif chip:
-            self.chip(x1 - 5, y0 + 9, chip, chip_color or C["dim"])
+            self.chip(x1 - 5, hy, chip, chip_color or C["dim"], size=self.T_CHIP, h=10)
         if hot:
             self._hot.append((x0, y0, x1, y1, hot))
 
-    def readout(self, x0, x1, y, label, val, unit, fmt="{:.1f}", size=17, color=None, wired=True):
-        self.text(x0 + 8, y, label, 9, anchor="w", fill=C["dim"])
+    def _fmt(self, val, fmt, wired):
+        """(text, colour or None) for a value; None colour means 'use the caller's'."""
         if not wired:
-            s, col = "---", C["nowire"]
-        elif not _valid(val):
-            s, col = ("FAULT", C["alarm"]) if isinstance(val, float) else ("---", C["dim"])
-        else:
-            s = val if isinstance(val, str) else fmt.format(val)
-            col = color or C["value"]
-        self.text(x1 - 34, y, s, size, mono=True, bold=True, anchor="e", fill=col)
-        self.text(x1 - 7, y + 1, unit, 9, anchor="e", fill=C["dim"])
+            return "---", C["nowire"]
+        if not _valid(val):
+            return ("FAULT", C["alarm"]) if isinstance(val, float) else ("---", C["dim"])
+        return (val if isinstance(val, str) else fmt.format(val)), None
+
+    def readout(self, x0, x1, y, label, val, unit, fmt="{:.1f}", size=22, color=None, wired=True):
+        """Label on the left, big value right-aligned, unit at the far right."""
+        self.text(x0 + 8, y, label, self.T_LABEL, anchor="w", fill=C["dim"])
+        s, col = self._fmt(val, fmt, wired)
+        self.text(x1 - 30, y, s, size, mono=True, bold=True, anchor="e",
+                  fill=col or color or C["value"])
+        self.text(x1 - 7, y + 1, unit, self.T_UNIT, anchor="e", fill=C["dim"])
+
+    def cell(self, x, y, label, val, unit, fmt="{:.1f}", size=20, color=None, wired=True):
+        """Stacked readout: small label above a big value (for narrow columns)."""
+        self.text(x, y, label, self.T_LABEL, anchor="w", fill=C["dim"])
+        s, col = self._fmt(val, fmt, wired)
+        self.text(x, y + 22, s, size, mono=True, bold=True, anchor="w",
+                  fill=col or color or C["value"])
+        if unit:
+            self.text(x + len(s) * size * 0.61 + 4, y + 24, unit, self.T_UNIT, anchor="w",
+                      fill=C["dim"])
 
     def hbar(self, x0, x1, y, h, frac, color, marker=None):
         self.rect(x0, y, x1, y + h, fill=C["well"], outline="")
@@ -241,7 +266,7 @@ class HmiCanvas(tk.Frame):
             self.line(*pts, fill=C["ok"], width=1.3)
 
     def gauge(self, cx, cy, r, val, vmax, unit, fmt="{:.0f}", setp=None, wired=True,
-              warn=0.75, alarm=0.9):
+              warn=0.75, alarm=0.9, vsize=22, usize=13):
         A = lambda f: 210 - 240 * f  # fraction -> Tk angle (deg, ccw from 3 o'clock)
         self.arc(cx, cy, r, A(1), 240, C["well"], 7)
         if wired:
@@ -266,9 +291,9 @@ class HmiCanvas(tk.Frame):
             tx, ty = cx + math.cos(a) * (r + 2), cy - math.sin(a) * (r + 2)
             self.oval(tx, ty, 3.5, fill=C["setp"], outline="")
         txt = fmt.format(val) if wired and _valid(val) else "---"
-        self.text(cx, cy + r * 0.55, txt, 17, mono=True, bold=True,
+        self.text(cx, cy + r * 0.55, txt, vsize, mono=True, bold=True,
                   fill=C["value"] if wired else C["nowire"])
-        self.text(cx, cy + r * 0.55 + 15, unit, 9, fill=C["dim"])
+        self.text(cx, cy + r * 0.55 + vsize * 0.6 + usize * 0.6, unit, usize, fill=C["dim"])
 
     def bubble(self, x, y, tag):
         """P&ID-style instrument bubble."""
@@ -288,19 +313,20 @@ class HmiCanvas(tk.Frame):
 
     # ------------------------------------------------------------ page chrome
     def background(self):
-        for x in range(0, VW + 1, 40):
-            self.line(x, 36, x, VH, fill=C["grid"])
-        for y in range(40, VH + 1, 40):
-            self.line(0, y, VW, y, fill=C["grid"])
+        for x in range(0, self.VW + 1, 40):
+            self.line(x, 36, x, self.VH, fill=C["grid"])
+        for y in range(40, self.VH + 1, 40):
+            self.line(0, y, self.VW, y, fill=C["grid"])
 
-    def title_bar(self, page, center=None, center_color=None):
-        self.rect(0, 0, VW, 34, fill=C["head"], outline="")
-        self.line(0, 34, VW, 34, fill=C["accent"], width=1.5)
-        self.text(14, 17, "FRANKENMOLDER", 16, bold=True, anchor="w", fill=C["value"])
-        self.text(180, 18, page, 10, anchor="w", fill=C["dim"])
+    def title_bar(self, center=None, center_color=None):
+        """Top bar: name, a status line in the middle, clock. (The tab names the page.)"""
+        self.rect(0, 0, self.VW, 36, fill=C["head"], outline="")
+        self.line(0, 36, self.VW, 36, fill=C["accent"], width=1.5)
+        self.text(12, 18, "FRANKENMOLDER", 20, bold=True, anchor="w", fill=C["value"])
         if center:
-            self.text(500, 17, center, 11, mono=True, fill=center_color or C["dim"])
-        self.text(VW - 14, 17, time.strftime("%H:%M:%S"), 15, mono=True, bold=True,
+            self.text(self.VW / 2 + 40, 18, center, 16, mono=True, bold=True,
+                      fill=center_color or C["dim"])
+        self.text(self.VW - 12, 18, time.strftime("%H:%M:%S"), 19, mono=True, bold=True,
                   anchor="e", fill=C["setp"])
 
     def heaters_ready_text(self, d):
@@ -311,13 +337,14 @@ class HmiCanvas(tk.Frame):
                 C["ok"] if ready == n else C["warn"] if ready else C["dim"])
 
     def event_panel(self, x0, y0, x1, y1, title="EVENTS"):
+        """Newest-first log, one line per event."""
         self.panel(x0, y0, x1, y1, title)
         col = {"info": C["text"], "ok": C["ok"], "alarm": C["alarm"], "cmd": C["setp"]}
-        rows = int((y1 - y0 - 24) // 22)
+        rows = int((y1 - y0 - self.HDR - 6) // 20)
         for i, (t, msg, lvl) in enumerate(list(self.events)[:rows]):
-            y = y0 + 32 + i * 22
-            self.text(x0 + 7, y - 5, t, 8, mono=True, anchor="w", fill=C["dim"])
-            self.text(x0 + 7, y + 5, msg, 9, mono=True, anchor="w", fill=col.get(lvl, C["text"]))
+            y = y0 + self.HDR + 15 + i * 20
+            self.text(x0 + 8, y, t[:5], 13, mono=True, anchor="w", fill=C["dim"])
+            self.text(x0 + 58, y, msg, 13, mono=True, anchor="w", fill=col.get(lvl, C["text"]))
 
     # ------------------------------------------------------------ controls
     def rrect(self, x0, y0, x1, y1, r, **kw):
@@ -340,7 +367,7 @@ class HmiCanvas(tk.Frame):
             self.rrect(x0, y0, x1, y1, 3, fill=blend(color, "#000000", 0.72), outline="")
 
     def lamp_button(self, x0, y0, x1, y1, label, face, lamp_on=False, lamp_color=LAMP["white"],
-                    on_press=None, enabled=True, size=13):
+                    on_press=None, enabled=True, size=18):
         """Industrial push-button: bezel, raised face, label and a lamp window that is
         lit while the thing the button controls is active."""
         pressed = enabled and self.is_pressed(x0, y0, x1, y1)
@@ -357,7 +384,8 @@ class HmiCanvas(tk.Frame):
         self.rrect(fx0 + 3, fy0 + 2, fx1 - 3, fy0 + (fy1 - fy0) * 0.42, 4,
                    fill=blend(face, "#ffffff", 0.10), outline="")
         txt = blend("#ffffff", face, 0.15) if enabled else blend("#ffffff", face, 0.6)
-        self.text((fx0 + fx1) / 2, fy0 + (fy1 - fy0) * 0.38, label, size, bold=True, fill=txt,
+        # label centred in the face above the lamp window
+        self.text((fx0 + fx1) / 2, (fy0 + fy1 - 16) / 2, label, size, bold=True, fill=txt,
                   justify="center")
         w = fx1 - fx0
         self._lamp(fx0 + w * 0.2, fy1 - 14, fx1 - w * 0.2, fy1 - 6, lamp_on and enabled,
@@ -367,21 +395,21 @@ class HmiCanvas(tk.Frame):
 
     def indicator(self, cx, y, label, on, color, w=56):
         """Stand-alone pilot lamp with a caption above it."""
-        self.text(cx, y, label, 9, bold=True, fill=C["text"] if on else C["dim"])
-        self._lamp(cx - w / 2, y + 10, cx + w / 2, y + 24, on, color)
+        self.text(cx, y, label, 13, bold=True, fill=C["text"] if on else C["dim"])
+        self._lamp(cx - w / 2, y + 12, cx + w / 2, y + 28, on, color)
 
     def value_button(self, x0, y0, x1, y1, label, value, unit, fmt="{:.1f}", on_press=None,
-                     color=None, size=20):
-        """Tap-to-edit numeric display (setpoints)."""
+                     color=None, size=26):
+        """Tap-to-edit numeric display (setpoints). Needs ~56 units of height."""
         pressed = self.is_pressed(x0, y0, x1, y1)
-        self.rrect(x0, y0, x1, y1, 6, fill="#151c25", outline=C["accent"] if pressed else "#33414f")
+        self.rrect(x0, y0, x1, y1, 6, fill="#151c25", outline=C["accent"] if pressed else "#3d8bd1")
         self.rect(x0 + 5, y0 + 5, x1 - 5, y1 - 5, fill="#1b2633" if pressed else C["well"],
                   outline="")
-        self.text(x0 + 11, y0 + 13, label, 8, bold=True, anchor="w", fill=C["dim"])
-        self.text(x1 - 11, y0 + 13, "TAP TO SET", 7, anchor="e", fill=C["accent"])
+        self.text(x0 + 11, y0 + 16, label, 13, bold=True, anchor="w", fill=C["dim"])
+        self.text(x1 - 11, y0 + 16, "TAP ✎", 13, bold=True, anchor="e", fill=C["accent"])
         s = fmt.format(value) if _valid(value) else "---"
-        self.text(x1 - 34, (y0 + y1) / 2 + 7, s, size, mono=True, bold=True, anchor="e",
+        self.text(x1 - 36, y1 - 20, s, size, mono=True, bold=True, anchor="e",
                   fill=(color or C["setp"]) if _valid(value) else C["dim"])
-        self.text(x1 - 11, (y0 + y1) / 2 + 8, unit, 9, anchor="e", fill=C["dim"])
+        self.text(x1 - 11, y1 - 18, unit, 13, anchor="e", fill=C["dim"])
         if on_press:
             self._hot.append((x0, y0, x1, y1, on_press))
