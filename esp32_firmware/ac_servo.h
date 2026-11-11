@@ -1,6 +1,6 @@
 #pragma once
 /**
- * Frankenmolder - AC servo test control (XP200 drive, pulse + direction mode)
+ * Frankenmolder - AC servo screw drive (XP200 drive, pulse + direction mode)
  *
  * Generates step pulses + direction for the servo drive with ramps, exact pulse
  * counts for position moves, and safety stops. Driven by its own CAN IDs, separate
@@ -33,7 +33,7 @@
  *   there is NO alarm -> GPIO34 LOW = OK. Set SERVO_ALARM_INPUT_ENABLED to 1 once wired.
  *
  * Drive parameters to check: Pr004 = 0 (position mode), Pr035 = 0 (pulse + direction),
- * Pr029/Pr030 electronic gear (default 10000 pulses/motor rev; Pr029=5 -> 2000/rev).
+ * Pr029 = 5 (2000 pulses/motor rev) - can_bridge_node.py assumes this for screw rpm -> Hz.
  *
  * ---------------------------------------------------------------------------
  * CAN PROTOCOL (all little-endian, standard 11-bit IDs)

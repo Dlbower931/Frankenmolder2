@@ -2,6 +2,9 @@
 """
 Frankenmolder - Extruder control page (heaters + screw drive).
 
+The screw drive is the AC servo on the ESP32 (see esp32_firmware/ac_servo.h); the CAN
+bridge turns screw rpm + direction into the servo's pulse frequency.
+
 Same look as the process overview, with lamp-style push buttons: the lamp in a
 button is lit while the thing it controls is in that state (e.g. HEAT lit while
 the zone is heating/holding, OFF lit while it is off).
@@ -27,13 +30,15 @@ class ExtruderPage(HmiCanvas):
     HIST_EVERY_S = 1.0
 
     def __init__(self, parent, on_setpoint_tap=None, on_zone_cmd=None, on_all_cmd=None,
-                 on_rpm_tap=None, on_motor_cmd=None, tick_ms=250, **kw):
+                 on_rpm_tap=None, on_motor_cmd=None, on_direction_cmd=None, tick_ms=250, **kw):
         """
         on_setpoint_tap(zone_id)    open the number pad for a zone setpoint
         on_zone_cmd(zone_id, cmd)   cmd is "ON" or "OFF"
         on_all_cmd(cmd)             same, for every zone
         on_rpm_tap()                open the number pad for screw RPM
         on_motor_cmd(cmd)           "ON" (start) or "OFF" (stop)
+        on_direction_cmd(dir)       "FWD" or "REV" (only offered while the screw is stopped);
+                                    returns False if it could not be sent
         """
         noop = lambda *a: None
         self.on_setpoint_tap = on_setpoint_tap or noop
@@ -41,6 +46,7 @@ class ExtruderPage(HmiCanvas):
         self.on_all_cmd = on_all_cmd or noop
         self.on_rpm_tap = on_rpm_tap or noop
         self.on_motor_cmd = on_motor_cmd or noop
+        self.on_direction_cmd = on_direction_cmd or noop
         self.data = blank_data()
         self.hist = {z: deque(maxlen=120) for z in self.data["zones"]}
         self._last_hist = 0.0
@@ -68,8 +74,21 @@ class ExtruderPage(HmiCanvas):
         self.log(f"DRIVE {'START' if cmd == 'ON' else 'STOP'} sent", "cmd")
         self.on_motor_cmd(cmd)
 
+    def _direction_cmd(self, d):
+        if self._motor_moving():
+            self.log("DIR LOCKED - STOP first", "alarm")
+            return
+        if self.on_direction_cmd(d) is not False:
+            self.data["motor"]["direction"] = d   # show it now; next set_data confirms
+            self.log(f"DIRECTION {d}", "cmd")
+
     def _motor_on(self):
-        return str(self.data["motor"].get("state", "")).upper() in ("ON", "RUN", "RUNNING")
+        return str(self.data["motor"].get("state") or "").upper() in ("ON", "RUN", "RUNNING")
+
+    def _motor_moving(self):
+        """Pulses going out (running or still ramping down)."""
+        return str(self.data["motor"].get("state") or "").upper() in (
+            "ON", "RUN", "RUNNING", "MOVING", "STOPPING")
 
     # ------------------------------------------------------------ drawing
     # Virtual space is hmi.VW x VH (1000x525 = the 7" screen's canvas at 0.8 scale).
@@ -146,25 +165,48 @@ class ExtruderPage(HmiCanvas):
 
     def _drive(self, d):
         m = d["motor"]
+        st = str(m.get("state") or "").upper()
         on = self._motor_on()
+        moving = self._motor_moving()
+        link = m.get("link", True)
+        flags = m.get("flags") or []
+        direction = m.get("direction", "FWD")
         ready = all(z.get("state") == "PID" for z in d["zones"].values())
+        if not link:
+            chip, chip_col = "NO LINK", C["alarm"]
+        elif st == "FAULT":
+            chip, chip_col = "FAULT", C["alarm"]
+        elif on and not ready:   # turning before the barrel is at temperature
+            chip, chip_col = "RUN COLD", C["warn"]
+        elif on:
+            chip, chip_col = "RUN", C["ok"]
+        elif st == "STOPPING":
+            chip, chip_col = "STOPPING", C["warn"]
+        else:
+            chip, chip_col = "STOP", C["off"]
+        if "WATCHDOG" in flags and not moving:
+            chip, chip_col = "CAN TIMEOUT", C["warn"]
         x0, x1 = 264, 752
         y0, y1 = self.CTRL_Y
-        self.panel(x0, y0, x1, y1, "SCREW DRIVE", chip="RUN" if on else "STOP",
-                   chip_color=C["ok"] if on else C["off"])
-        self.lamp_button(x0 + 8, y0 + 36, x0 + 120, y1 - 6, "START", FACE["start"],
+        by0, by1 = y0 + 36, y1 - 6
+        self.panel(x0, y0, x1, y1, "SCREW DRIVE", chip=chip, chip_color=chip_col)
+        self.lamp_button(x0 + 8, by0, x0 + 96, by1, "START", FACE["start"],
                          lamp_on=on, lamp_color=LAMP["green"],
-                         on_press=lambda: self._motor_cmd("ON"), size=20)
-        self.lamp_button(x0 + 128, y0 + 36, x0 + 240, y1 - 6, "STOP", FACE["stop"],
-                         lamp_on=not on, lamp_color=LAMP["red"],
-                         on_press=lambda: self._motor_cmd("OFF"), size=20)
-        self.value_button(x0 + 250, y0 + 36, x1 - 8, y0 + 94, "SET RPM", m.get("rpm_set"),
-                          "rpm", on_press=self.on_rpm_tap)
-        self.readout(x0 + 246, x1 - 4, y0 + 112, "ACTUAL", m.get("rpm_act"), "rpm", size=22,
+                         on_press=lambda: self._motor_cmd("ON"), size=18)
+        self.lamp_button(x0 + 102, by0, x0 + 190, by1, "STOP", FACE["stop"],
+                         lamp_on=not moving, lamp_color=LAMP["red"],
+                         on_press=lambda: self._motor_cmd("OFF"), size=18)
+        # direction: locked while the screw turns
+        for i, dname in enumerate(("FWD", "REV")):
+            bx = x0 + 198 + i * 68
+            self.lamp_button(bx, by0, bx + 64, by1, dname, FACE["blue"],
+                             lamp_on=direction == dname, lamp_color=LAMP["blue"],
+                             enabled=not moving, size=15,
+                             on_press=lambda dname=dname: self._direction_cmd(dname))
+        self.value_button(x0 + 338, by0, x1 - 8, y0 + 94, "SET RPM", m.get("rpm_set"),
+                          "rpm", size=22, on_press=self.on_rpm_tap)
+        self.readout(x0 + 334, x1 - 4, y0 + 116, "ACTUAL", m.get("rpm_act"), "rpm", size=20,
                      color=C["ok"] if on else C["value"])
-        if on and not ready:   # drive turning before the barrel is at temperature
-            self.text(x0 + 254, y1 - 12, "RUNNING COLD - heaters not at temp", 13, bold=True,
-                      anchor="w", fill=C["warn"])
 
 
 def main():

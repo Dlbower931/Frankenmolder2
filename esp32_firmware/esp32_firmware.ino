@@ -23,7 +23,7 @@
 #include <SPI.h>
 #include <Adafruit_MAX31856.h> // Adafruit's library
 #include <PID_v1.h>  // The PID library
-#include "ac_servo.h" // AC servo test control (CAN 0x230-0x232 / 0x130-0x131)
+#include "ac_servo.h" // AC servo screw drive (CAN 0x230-0x232 / 0x130-0x131)
 
 // --- Pin Definitions ---
 // CAN

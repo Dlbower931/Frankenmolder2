@@ -32,9 +32,6 @@ CAN_ID_STATUS_STATE_1 = 0x111
 CAN_ID_STATUS_STATE_2 = 0x112
 CAN_ID_STATUS_STATE_3 = 0x113
 CAN_ID_STATUS_STATE_4 = 0x114
-# (string) Motor Actual State "ON", "OFF"
-CAN_ID_STATUS_MOTOR_STATE = 0x120
-# CAN_ID_STATUS_MOTOR_RPM = 0x121
 
 # --- Pi -> ESP32 (Commands) ---
 # --- ADDED HEARTBEAT ID ---
@@ -46,12 +43,7 @@ CAN_ID_CMD_SETPOINT_3 = 0x203
 CAN_ID_CMD_SETPOINT_4 = 0x204
 # (string) "zoneX:STATE"
 CAN_ID_CMD_STATE = 0x210
-# (string) "ON", "OFF"
-CAN_ID_CMD_MOTOR_STATE = 0x220
-# (string) "RPMxx.x"
-CAN_ID_CMD_MOTOR_RPM = 0x221
-
-# --- AC servo test (binary, little-endian; see esp32_firmware/ac_servo.h) ---
+# --- Screw drive: AC servo (binary, little-endian; see esp32_firmware/ac_servo.h) ---
 CAN_ID_CMD_SERVO = 0x230         # [u8 cmd] 1=RUN 2=STOP 3=ESTOP 4=ZERO
 CAN_ID_CMD_SERVO_SPEED = 0x231   # [f32 target_hz signed][f32 accel Hz/s]
 CAN_ID_CMD_SERVO_MOVE = 0x232    # [i32 pulses signed][f32 hz]
@@ -62,13 +54,19 @@ SERVO_STATES = {0: "IDLE", 1: "RUNNING", 2: "MOVING", 3: "STOPPING", 4: "FAULT"}
 SERVO_FLAG_NAMES = ((0x01, "ALARM"), (0x02, "WATCHDOG"), (0x04, "AT_SPEED"), (0x08, "ALARM_INPUT"),
                     (0x10, "SON"))
 
+# Screw drive scaling: drive set to Pr029 = 5 -> 2000 pulses per motor rev, 30:1 gearbox
+SERVO_PULSES_PER_REV = 2000
+SCREW_GEARBOX = 30.0
+HZ_PER_SCREW_RPM = SERVO_PULSES_PER_REV * SCREW_GEARBOX / 60.0   # = 1000 Hz per screw rpm
+SERVO_MAX_HZ = 200000
+DEFAULT_MOTOR_ACCEL = 20000.0   # Hz/s -> 0..100 screw rpm in 5 s
+# /extruder/motor/state_cmd -> servo command
+MOTOR_CMDS = {"ON": "RUN", "START": "RUN", "RUN": "RUN",
+              "OFF": "STOP", "STOP": "STOP", "ESTOP": "ESTOP"}
+
 
 def pack_servo_speed(target_hz, accel):
     return list(struct.pack('<ff', float(target_hz), float(accel)))
-
-
-def pack_servo_move(pulses, hz):
-    return list(struct.pack('<if', int(pulses), float(hz)))
 
 
 def unpack_servo_status(data):
@@ -109,19 +107,18 @@ class CANBridgeNode:
             CAN_ID_STATUS_TEMP_4: rospy.Publisher('/extruder/zone4/error_state', String, queue_size=10, latch=True),
         }
         
-        self.motor_state_pub = rospy.Publisher('/extruder/motor/actual_state', String, queue_size=10, latch=True)
-        # self.motor_rpm_pub = rospy.Publisher('/extruder/motor/actual_rpm', Float32, queue_size=10)
         self.raw_can_pub = rospy.Publisher('/can_bus_raw_string', String, queue_size=50)
 
-        # AC servo test status (CAN -> ROS)
-        self.servo_state_pub = rospy.Publisher('/servo/state', String, queue_size=10, latch=True)
-        self.servo_flags_pub = rospy.Publisher('/servo/flags', String, queue_size=10, latch=True)
-        self.servo_hz_pub = rospy.Publisher('/servo/actual_hz', Float32, queue_size=10)
-        self.servo_pos_pub = rospy.Publisher('/servo/position', Int32, queue_size=10)
-        self.servo_target_echo_pub = rospy.Publisher('/servo/target_echo_hz', Float32, queue_size=10)
-        # Last speed settings; 0x231 always carries both
-        self.servo_target_hz = 0.0
-        self.servo_accel = 20000.0
+        # Screw drive (AC servo) status (CAN -> ROS)
+        # actual_state: IDLE / RUNNING / MOVING / STOPPING / FAULT
+        self.motor_state_pub = rospy.Publisher('/extruder/motor/actual_state', String, queue_size=10, latch=True)
+        self.motor_rpm_pub = rospy.Publisher('/extruder/motor/actual_rpm', Float32, queue_size=10)
+        self.motor_flags_pub = rospy.Publisher('/extruder/motor/flags', String, queue_size=10, latch=True)
+        self.motor_pos_pub = rospy.Publisher('/extruder/motor/position', Int32, queue_size=10)
+        # Screw drive settings; 0x231 always carries speed, direction and accel together
+        self.motor_rpm = 0.0          # screw rpm, >= 0
+        self.motor_direction = 1      # +1 FWD, -1 REV
+        self.motor_accel = float(rospy.get_param('~motor_accel', DEFAULT_MOTOR_ACCEL))
 
         # Helper for logging
         self.zone_names = {
@@ -168,11 +165,7 @@ class CANBridgeNode:
         rospy.Subscriber('/extruder/zone3/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone3"))
         rospy.Subscriber('/extruder/zone4/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone4"))
 
-        # AC servo test (ROS -> CAN)
-        rospy.Subscriber('/servo/command', String, self.ros_servo_command_callback)
-        rospy.Subscriber('/servo/target_hz', Float32, self.ros_servo_target_callback)
-        rospy.Subscriber('/servo/accel', Float32, self.ros_servo_accel_callback)
-        rospy.Subscriber('/servo/move_pulses', Int32, self.ros_servo_move_callback)
+        rospy.Subscriber('/extruder/motor/direction', String, self.ros_motor_direction_callback)
 
         # --- ADDED: Start the heartbeat timer ---
         self.heartbeat_timer = rospy.Timer(rospy.Duration(1.0 / HEARTBEAT_RATE_HZ), self.send_heartbeat_callback)
@@ -195,16 +188,39 @@ class CANBridgeNode:
         except Exception as e:
             rospy.logerr(f"CAN TX (ID 0x{CAN_ID_CMD_HEARTBEAT:X}): Failed to send heartbeat: {e}")
 
+    # --- Screw drive (AC servo) ---
+    def _send_motor_speed(self):
+        """Screw rpm + direction -> signed pulse frequency (applied live by the ESP32)."""
+        hz = min(self.motor_rpm * HZ_PER_SCREW_RPM, SERVO_MAX_HZ) * self.motor_direction
+        self.send_can_bytes(CAN_ID_CMD_SERVO_SPEED, pack_servo_speed(hz, self.motor_accel))
+
     def ros_motor_state_callback(self, msg):
-        command_str = msg.data
-        rospy.loginfo(f"ROS->CAN: Received motor state command: {command_str}")
-        self.send_can_string(CAN_ID_CMD_MOTOR_STATE, command_str)
+        cmd = MOTOR_CMDS.get(msg.data.strip().upper())
+        if cmd is None:
+            rospy.logwarn(f"ROS->CAN: unknown motor command '{msg.data}' (use ON/OFF/ESTOP)")
+            return
+        rospy.loginfo(f"ROS->CAN: motor {msg.data} -> servo {cmd}")
+        if cmd == "RUN":
+            self._send_motor_speed()   # make sure the ESP32 has the current speed first
+        self.send_can_bytes(CAN_ID_CMD_SERVO, [SERVO_CMD_CODES[cmd]])
 
     def ros_motor_rpm_callback(self, msg):
-        rpm_val = msg.data
-        command_str = f"RPM{rpm_val:.1f}" 
-        rospy.loginfo(f"ROS->CAN: Received motor RPM: {rpm_val}, Sending string: '{command_str}'")
-        self.send_can_string(CAN_ID_CMD_MOTOR_RPM, command_str)
+        rpm = float(msg.data)
+        if rpm != rpm or rpm < 0:
+            rospy.logwarn(f"ROS->CAN: invalid screw rpm {msg.data}")
+            return
+        self.motor_rpm = rpm
+        rospy.loginfo(f"ROS->CAN: screw {rpm:.1f} rpm = {rpm * HZ_PER_SCREW_RPM:.0f} Hz")
+        self._send_motor_speed()
+
+    def ros_motor_direction_callback(self, msg):
+        d = msg.data.strip().upper()
+        if d not in ("FWD", "REV"):
+            rospy.logwarn(f"ROS->CAN: unknown motor direction '{msg.data}' (use FWD/REV)")
+            return
+        self.motor_direction = 1 if d == "FWD" else -1
+        rospy.loginfo(f"ROS->CAN: screw direction {d}")
+        self._send_motor_speed()
 
     def ros_heater_state_callback(self, msg, zone_id):
         """Called when GUI sends /extruder/zoneX/state_cmd"""
@@ -236,32 +252,6 @@ class CANBridgeNode:
             self.send_can_float(can_id, setpoint_value)
         else:
             rospy.logwarn(f"ROS->CAN: No CAN ID defined for setpoint on {zone_id}")
-
-    # --- AC servo test (ROS -> CAN) ---
-    def ros_servo_command_callback(self, msg):
-        code = SERVO_CMD_CODES.get(msg.data.strip().upper())
-        if code is None:
-            rospy.logwarn(f"ROS->CAN: unknown servo command '{msg.data}' (use RUN/STOP/ESTOP/ZERO)")
-            return
-        rospy.loginfo(f"ROS->CAN: servo {msg.data}")
-        self.send_can_bytes(CAN_ID_CMD_SERVO, [code])
-
-    def _send_servo_speed(self):
-        self.send_can_bytes(CAN_ID_CMD_SERVO_SPEED,
-                            pack_servo_speed(self.servo_target_hz, self.servo_accel))
-
-    def ros_servo_target_callback(self, msg):
-        self.servo_target_hz = float(msg.data)
-        self._send_servo_speed()
-
-    def ros_servo_accel_callback(self, msg):
-        self.servo_accel = float(msg.data)
-        self._send_servo_speed()
-
-    def ros_servo_move_callback(self, msg):
-        hz = abs(self.servo_target_hz) or 1000.0
-        rospy.loginfo(f"ROS->CAN: servo move {msg.data} pulses at {hz:.0f} Hz")
-        self.send_can_bytes(CAN_ID_CMD_SERVO_MOVE, pack_servo_move(msg.data, hz))
 
     # --- CAN Sending Methods ---
     
@@ -366,25 +356,15 @@ class CANBridgeNode:
                     except Exception as e:
                         rospy.logwarn(f"CAN->ROS ({zone_name}): Error decoding string: {e}")
                 
-                # --- AC servo test status ---
+                # --- Screw drive (AC servo) status ---
                 elif message.arbitration_id == CAN_ID_STATUS_SERVO and message.dlc == 8:
                     state, flags, actual_hz = unpack_servo_status(message.data)
-                    self.servo_state_pub.publish(String(state))
-                    self.servo_flags_pub.publish(String(",".join(flags)))
-                    self.servo_hz_pub.publish(Float32(actual_hz))
+                    self.motor_state_pub.publish(String(state))
+                    self.motor_flags_pub.publish(String(",".join(flags)))
+                    self.motor_rpm_pub.publish(Float32(abs(actual_hz) / HZ_PER_SCREW_RPM))
                 elif message.arbitration_id == CAN_ID_STATUS_SERVO_POS and message.dlc == 8:
-                    position, target_echo = unpack_servo_pos(message.data)
-                    self.servo_pos_pub.publish(Int32(position))
-                    self.servo_target_echo_pub.publish(Float32(target_echo))
-
-                # --- Handle Motor State Status Messages ---
-                elif message.arbitration_id == CAN_ID_STATUS_MOTOR_STATE:
-                    try:
-                        state_str = message.data.decode('utf-8').strip('\x00')
-                        rospy.loginfo(f"CAN->ROS (Motor State): {state_str}")
-                        self.motor_state_pub.publish(String(state_str))
-                    except Exception as e:
-                        rospy.logwarn(f"CAN->ROS (Motor State): Error decoding string: {e}")
+                    position, _target_echo = unpack_servo_pos(message.data)
+                    self.motor_pos_pub.publish(Int32(position))
 
         except rospy.ROSInterruptException:
             pass

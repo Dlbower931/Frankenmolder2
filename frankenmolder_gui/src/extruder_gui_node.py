@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import rospy
-from std_msgs.msg import Float32, Int32, String
+from std_msgs.msg import Float32, String
 from rosgraph_msgs.msg import Log
 import json
 from collections import deque
@@ -13,7 +13,6 @@ import sys # Added for stderr
 import time
 from process_dashboard import ControlRoomDashboard, blank_data
 from extruder_page import ExtruderPage
-from servo_page import ServoTestPage, blank_servo
 from watchdog_page import (ROSOUT_LEVELS, LinkAlarmPopup, LinkMonitor, WatchdogPage,
                            build_alarms)
 import hmi
@@ -30,18 +29,19 @@ GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates
 latest_temps = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
 # --- RENAMED: This now stores the *true* state from the control node ---
 latest_actual_states = {f"zone{i+1}": "OFF" for i in range(ZONE_COUNT)}
-latest_motor_state = "STOPPED" # Shared state for the motor
+# Screw drive = AC servo via the ESP32 (state: IDLE / RUNNING / MOVING / STOPPING / FAULT)
+latest_motor_state = None
+latest_motor_rpm_act = float('nan')
+latest_motor_flags = []
+last_motor_time = 0.0
+MOTOR_LINK_TIMEOUT_S = 1.0  # ESP32 sends servo status every 100 ms
+motor_direction = "FWD"     # operator setting, pushed to the CAN bridge on a latched topic
 # Dashboard extras: echoed setpoints, sensor faults and link health
 latest_setpoints = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
 latest_error_states = {f"zone{i+1}": "OK" for i in range(ZONE_COUNT)}
 latest_motor_rpm_set = float('nan')
 last_temp_time = 0.0  # time.time() of the last temperature message from the ESP32
 LINK_TIMEOUT_S = 5.0
-# AC servo test status (from /servo/* topics)
-latest_servo = {"state": None, "flags": [], "actual_hz": None, "position": None,
-                "target_echo": None}
-last_servo_time = 0.0
-SERVO_LINK_TIMEOUT_S = 1.0  # ESP32 sends servo status every 100 ms
 # Watchdog tab: decoded /watchdog/status and the ROS log (/rosout_agg)
 latest_watchdog = None
 last_watchdog_time = 0.0
@@ -235,19 +235,11 @@ class ExtruderGUI(tk.Frame):
             on_zone_cmd=self.publish_state_cmd,
             on_all_cmd=self.publish_all_zones_cmd,
             on_rpm_tap=self.open_rpm_pad,
-            on_motor_cmd=self.publish_motor_cmd)
+            on_motor_cmd=self.publish_motor_cmd,
+            on_direction_cmd=self.publish_motor_direction)
         self.notebook.add(self.extruder_frame, text='Extruder')
 
-        # --- Tab 3: AC servo test ---
-        self.servo_frame = ServoTestPage(
-            self.notebook,
-            send_speed=self.publish_servo_speed,
-            send_cmd=self.publish_servo_cmd,
-            send_move=self.publish_servo_move,
-            ask_number=self.open_servo_number_pad)
-        self.notebook.add(self.servo_frame, text='Servo Test')
-
-        # --- Tab 4: Watchdog (CAN link health, alarms, ROS log) ---
+        # --- Tab 3: Watchdog (CAN link health, alarms, ROS log) ---
         self.watchdog_frame = WatchdogPage(self.notebook, on_clear_logs=self.clear_logs)
         self.notebook.add(self.watchdog_frame, text='Watchdog')
         self._watchdog_tab_text = None
@@ -305,33 +297,22 @@ class ExtruderGUI(tk.Frame):
                     self.update_error_state_callback, callback_args=zone_id
                 )
             
-            # --- Motor Publishers & Subscribers ---
-            self.publishers["motor_set_rpm"] = rospy.Publisher('/extruder/motor/set_rpm', Float32, queue_size=1)
+            # --- Screw drive (AC servo, translated by can_bridge_node) ---
+            # set_rpm and direction are latched so a restarted bridge picks them up again
+            self.publishers["motor_set_rpm"] = rospy.Publisher('/extruder/motor/set_rpm', Float32, queue_size=1, latch=True)
             self.publishers["motor_state_cmd"] = rospy.Publisher('/extruder/motor/state_cmd', String, queue_size=1)
+            self.publishers["motor_direction"] = rospy.Publisher('/extruder/motor/direction', String, queue_size=1, latch=True)
+            self.publishers["motor_direction"].publish(String(motor_direction))
 
-            # This subscription for the motor is already correct
             self.subscribers["motor_actual_state"] = rospy.Subscriber(
-                '/extruder/motor/actual_state', # Listen for state from PICO
-                String,
-                self.update_motor_state_callback
-            )
+                '/extruder/motor/actual_state', String, self.update_motor_state_callback)
+            self.subscribers["motor_actual_rpm"] = rospy.Subscriber(
+                '/extruder/motor/actual_rpm', Float32, self.update_motor_rpm_act_callback)
+            self.subscribers["motor_flags"] = rospy.Subscriber(
+                '/extruder/motor/flags', String, self.update_motor_flags_callback)
             self.subscribers["motor_set_rpm_echo"] = rospy.Subscriber(
                 '/extruder/motor/set_rpm', Float32, self.update_motor_rpm_set_callback
             )
-
-            # --- AC servo test ---
-            self.publishers["servo_command"] = rospy.Publisher('/servo/command', String, queue_size=5)
-            self.publishers["servo_target_hz"] = rospy.Publisher('/servo/target_hz', Float32, queue_size=5)
-            self.publishers["servo_accel"] = rospy.Publisher('/servo/accel', Float32, queue_size=5)
-            self.publishers["servo_move_pulses"] = rospy.Publisher('/servo/move_pulses', Int32, queue_size=5)
-            for topic, msg_type, key, conv in (
-                    ('/servo/state', String, "state", str),
-                    ('/servo/flags', String, "flags", lambda v: [f for f in v.split(",") if f]),
-                    ('/servo/actual_hz', Float32, "actual_hz", float),
-                    ('/servo/position', Int32, "position", int),
-                    ('/servo/target_echo_hz', Float32, "target_echo", float)):
-                self.subscribers[f"servo_{key}"] = rospy.Subscriber(
-                    topic, msg_type, self.update_servo_callback, callback_args=(key, conv))
 
             # --- Watchdog ---
             self.subscribers["watchdog_status"] = rospy.Subscriber(
@@ -373,10 +354,21 @@ class ExtruderGUI(tk.Frame):
         """ROS thread callback: Safely update shared motor state."""
         try:
             with data_lock:
-                global latest_motor_state # Ensure we modify the global
+                global latest_motor_state, last_motor_time
                 latest_motor_state = state_msg.data
+                last_motor_time = time.time()
         except Exception as e:
             rospy.logerr(f"R_MOTOR_CB: Error storing motor state: {e}")
+
+    def update_motor_rpm_act_callback(self, msg):
+        with data_lock:
+            global latest_motor_rpm_act
+            latest_motor_rpm_act = msg.data
+
+    def update_motor_flags_callback(self, msg):
+        with data_lock:
+            global latest_motor_flags
+            latest_motor_flags = [f for f in msg.data.split(",") if f]
 
     def update_setpoint_callback(self, msg, zone_id):
         with data_lock:
@@ -390,13 +382,6 @@ class ExtruderGUI(tk.Frame):
         with data_lock:
             global latest_motor_rpm_set
             latest_motor_rpm_set = msg.data
-
-    def update_servo_callback(self, msg, args):
-        key, conv = args
-        with data_lock:
-            global last_servo_time
-            latest_servo[key] = conv(msg.data)
-            last_servo_time = time.time()
 
     def update_watchdog_callback(self, msg):
         try:
@@ -433,16 +418,18 @@ class ExtruderGUI(tk.Frame):
                     "set": nan_to_none(latest_setpoints[zone_id]),
                     "state": "FAULT" if fault else latest_actual_states[zone_id],
                 }
-            motor_on = latest_motor_state in ("ON", "RUNNING")
-            rpm_set = nan_to_none(latest_motor_rpm_set)
-            d["motor"] = {
-                "state": "ON" if motor_on else "OFF",
-                "rpm_set": rpm_set,
-                # No speed feedback from the drive yet: show the commanded speed while on
-                "rpm_act": (rpm_set or 0.0) if motor_on else 0.0,
-                "load": None,
-            }
             now = time.time()
+            motor_link = (now - last_motor_time) < MOTOR_LINK_TIMEOUT_S
+            d["motor"] = {
+                # servo state from the ESP32; None when its status frames stop arriving
+                "state": latest_motor_state if motor_link else None,
+                "rpm_set": nan_to_none(latest_motor_rpm_set),
+                "rpm_act": nan_to_none(latest_motor_rpm_act) if motor_link else None,
+                "load": None,
+                "direction": motor_direction,
+                "flags": list(latest_motor_flags) if motor_link else [],
+                "link": motor_link,
+            }
             wd_age = (now - last_watchdog_time) if last_watchdog_time else None
             temp_age = (now - last_temp_time) if last_temp_time else None
             change = self.link_monitor.update(now, latest_watchdog, wd_age, temp_age)
@@ -452,11 +439,6 @@ class ExtruderGUI(tk.Frame):
                              "alarms": build_alarms(link, latest_watchdog, wd_age, now),
                              "logs": list(log_entries)}
             d["link_change"] = change
-            servo = blank_servo()
-            servo.update({k: (list(v) if isinstance(v, list) else v)
-                          for k, v in latest_servo.items()})
-            servo["link"] = (time.time() - last_servo_time) < SERVO_LINK_TIMEOUT_S
-            d["servo"] = servo
         return d
 
     # --- CAN link alarm ---
@@ -551,23 +533,14 @@ class ExtruderGUI(tk.Frame):
         self._publish("motor_state_cmd", String(command),
                       f"Motor {'START' if command == 'ON' else 'STOP'} sent.")
 
-    # --- Commands from the Servo Test page ---
-    def open_servo_number_pad(self, current, lo, hi, apply):
-        var = tk.StringVar(value=f"{current:.0f}")
-        NumberPadPopup(self.master, self.servo_frame, var, min_val=lo, max_val=hi,
-                       confirm_text="Set", on_confirm=apply)
-
-    def publish_servo_speed(self, signed_hz, accel):
-        self._publish("servo_accel", Float32(float(accel)), f"Servo accel {accel:.0f} Hz/s sent.")
-        self._publish("servo_target_hz", Float32(float(signed_hz)),
-                      f"Servo target {signed_hz:+.0f} Hz sent.")
-
-    def publish_servo_cmd(self, command):
-        """command: RUN, STOP, ESTOP or ZERO."""
-        self._publish("servo_command", String(command), f"Servo {command} sent.")
-
-    def publish_servo_move(self, pulses):
-        self._publish("servo_move_pulses", Int32(int(pulses)), f"Servo move {pulses:+d} pulses sent.")
+    def publish_motor_direction(self, direction):
+        """direction is 'FWD' or 'REV'. The page only offers it while the screw is stopped."""
+        global motor_direction
+        if self._publish("motor_direction", String(direction), f"Screw direction {direction} sent."):
+            with data_lock:
+                motor_direction = direction
+            return True
+        return False
 
     # --- GUI Polling Function (Read shared data) ---
     def poll_ros_updates(self):
@@ -577,7 +550,6 @@ class ExtruderGUI(tk.Frame):
             data = self.build_dashboard_data()
             self.dashboard_frame.set_data(data)
             self.extruder_frame.set_data(data)
-            self.servo_frame.set_data(data)
             self.watchdog_frame.set_data(data)
             self.handle_link_alarm(data)
 

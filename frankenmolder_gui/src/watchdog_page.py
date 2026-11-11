@@ -502,7 +502,7 @@ def main():
                 random.choice(("GUI: zone1: setpoint 200.0 °C sent.",
                                "Published temp zone2: 201.4",
                                "CAN TX failed: [Errno 105] No buffer space available",
-                               "Servo target +5000 Hz sent.")))
+                               "Screw RPM 25.0 sent.")))
         can = {"iface": "can0", "ok": not down,
                "reason": "Pi CAN controller is BUS-OFF" if down else "OK",
                "state": "BUS-OFF" if down else "ERROR-ACTIVE", "operstate": "UP",
