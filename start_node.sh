@@ -4,6 +4,22 @@
 # This path comes from the 'catkin_make_isolated --install' command in your Dockerfile
 source /app/install_isolated/setup.bash
 
+# --- CONFIGURE THE HOST'S CAN INTERFACE ---
+# The container runs with network_mode: host + privileged, so this configures the Pi's can0.
+# restart-ms: auto-recover from bus-off (e.g. while the ESP32 is reset or reflashed).
+# txqueuelen: room to queue frames during a short outage instead of dropping them.
+CAN_IFACE="${CAN_IFACE:-can0}"
+CAN_BITRATE="${CAN_BITRATE:-500000}"
+CAN_RESTART_MS="${CAN_RESTART_MS:-100}"
+CAN_TXQUEUELEN="${CAN_TXQUEUELEN:-100}"
+echo "Configuring $CAN_IFACE (bitrate $CAN_BITRATE, restart-ms $CAN_RESTART_MS, txqueuelen $CAN_TXQUEUELEN)..."
+if ip link set "$CAN_IFACE" down && \
+   ip link set "$CAN_IFACE" up txqueuelen "$CAN_TXQUEUELEN" type can bitrate "$CAN_BITRATE" restart-ms "$CAN_RESTART_MS"; then
+    ip -details link show "$CAN_IFACE" | grep -E "can state|bitrate" | sed 's/^/    /'
+else
+    echo "WARNING: Failed to configure $CAN_IFACE. The CAN bridge may not work."
+fi
+
 # Start ROS Master
 roscore &
 echo "Waiting 5 seconds for ROS Master..."

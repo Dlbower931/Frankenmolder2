@@ -4,44 +4,46 @@
  * This is Part 1 of 3: Includes, Definitions, and Globals
  *
  * Implements full PID control with PWM and a CAN watchdog.
- * 1. Reads 3x MAX6675 sensors.
+ * 1. Reads 4x MAX31856 thermocouple amplifiers (K-type, hardware SPI).
  * 2. Receives Setpoint (float) and State (2-byte) Commands from Pi.
  * 3. Runs State Machine (OFF, HEATING, PID) for each zone.
  * 4. Runs a true PID controller for each zone, outputting PWM (0-255).
- * 5. Controls 3x Heater GPIO pins via PWM.
+ * 5. Controls 4x Heater GPIO pins via PWM.
  * 6. Publishes actual Temperature (float) and actual State (String) back to Pi.
  *
  * REQUIRED LIBRARIES:
  * 1. ESP32-TWAI-CAN (by rdupuis)
- * 2. Adafruit MAX6675 Library (by Adafruit)
+ * 2. Adafruit MAX31856 Library (by Adafruit)
  * 3. PID (by Brett Beauregard)
  * 4. FastAccelStepper (by gin66), tested with 2.0.1 - AC servo pulse/direction, see ac_servo.h
  */
 
 #include <Arduino.h>
 #include <ESP32-TWAI-CAN.hpp>
-#include <max6675.h> // Adafruit's library
+#include <SPI.h>
+#include <Adafruit_MAX31856.h> // Adafruit's library
 #include <PID_v1.h>  // The PID library
 #include "ac_servo.h" // AC servo test control (CAN 0x230-0x232 / 0x130-0x131)
 
 // --- Pin Definitions ---
 // CAN
-#define CAN_TX 5 // (TXD)
-#define CAN_RX 4 // (RXD)
-// MAX6675 Software SPI
-#define SCK_PIN 18
-#define SO_PIN  19
-#define CS1_PIN 13
+#define CAN_TX 13 // (TXD) - moved from GPIO5, which is now TC1 chip select
+#define CAN_RX 4  // (RXD)
+// MAX31856 Hardware SPI (VSPI)
+#define SCK_PIN  18
+#define MISO_PIN 19
+#define MOSI_PIN 23
+#define CS1_PIN 5
 #define CS2_PIN 14
-#define CS3_PIN 27
-#define CS4_PIN 26
+#define CS3_PIN 15
+#define CS4_PIN 27
 // Heater Control (PWM)
 #define HEATER_PIN_1 12 // GPIO for Zone 1 Heater Relay/SSR
 #define HEATER_PIN_2 16 // GPIO for Zone 2 Heater Relay/SSR
 #define HEATER_PIN_3 17 // GPIO for Zone 3 Heater Relay/SSR
 #define HEATER_PIN_4 25 // GPIO for Zone 4 Heater Relay/SSR
 const int heaterPins[4] = {HEATER_PIN_1, HEATER_PIN_2, HEATER_PIN_3, HEATER_PIN_4};
-// PWM Channels (0, 1, 2, 5) - Channel 3 is used by servo
+// PWM Channels
 const int HEATER_PWM_CHAN_1 = 0;
 const int HEATER_PWM_CHAN_2 = 1;
 const int HEATER_PWM_CHAN_3 = 2;
@@ -50,8 +52,6 @@ const int heaterPWMChannels[4] = {HEATER_PWM_CHAN_1, HEATER_PWM_CHAN_2, HEATER_P
 const int PWM_FREQ = 5000; // 5 kHz PWM frequency for SSRs
 const int PWM_RESOLUTION = 8; // 8-bit resolution (0-255)
 const int PWM_MAX_DUTY = 255; // Max duty cycle
-// Servo Control
-#define SERVO_PIN 22 // GPIO for 9g servo motor
 
 // --- CAN ID Protocol (Must match Pi's can_bridge_node.py) ---
 // ESP32 -> Pi (Status/Data)
@@ -63,7 +63,6 @@ const int PWM_MAX_DUTY = 255; // Max duty cycle
 #define CAN_ID_STATUS_STATE_2  0x112 // (string)
 #define CAN_ID_STATUS_STATE_3  0x113 // (string)
 #define CAN_ID_STATUS_STATE_4  0x114 // (string)
-#define CAN_ID_STATUS_MOTOR_STATE 0x120 // (string) "ON", "OFF"
 
 // Pi -> ESP32 (Commands)
 #define CAN_ID_CMD_SETPOINT_1  0x201 // (float) Setpoint Zone 1
@@ -71,15 +70,13 @@ const int PWM_MAX_DUTY = 255; // Max duty cycle
 #define CAN_ID_CMD_SETPOINT_3  0x203 // (float) Setpoint Zone 3
 #define CAN_ID_CMD_SETPOINT_4  0x204 // (float) Setpoint Zone 4
 #define CAN_ID_CMD_STATE       0x210 // (2-byte) [ZoneIdx, StateCode]
-#define CAN_ID_CMD_MOTOR_STATE 0x220 // (string) "ON", "OFF"
-#define CAN_ID_CMD_MOTOR_RPM   0x221 // (string) "RPM50.0"
 #define CAN_ID_CMD_HEARTBEAT   0x200 // (Empty frame) Pi is alive
 
 // --- Global State & Control Variables ---
 #define NUM_ZONES 4
 
 // Sensor/State Data
-double actualTemp[NUM_ZONES]   = {NAN, NAN, NAN}; // Use NAN for "not a number"
+double actualTemp[NUM_ZONES]   = {NAN, NAN, NAN, NAN}; // Use NAN for "not a number"
 double targetSetpoint[NUM_ZONES] = {0.0, 0.0, 0.0};
 double heaterOutput[NUM_ZONES] = {0.0, 0.0, 0.0}; // PID output variable (0-255)
 String zoneState[NUM_ZONES]    = {"OFF", "OFF", "OFF"}; // The *actual* state of the controller
@@ -103,32 +100,12 @@ unsigned long prevStatusMillis = 0;
 unsigned long prevControlMillis = 0;
 unsigned long lastCanMessageTime = 0; // For watchdog
 
-// Servo Control (using ESP32 LEDC PWM)
-#define SERVO_PIN 22 // GPIO for 9g servo motor
-const int SERVO_PWM_CHANNEL = 3; // Use channel 3 for servo (0,1,2 are used for heaters)
-const int SERVO_PWM_FREQ = 50; // 50 Hz for standard servos
-const int SERVO_PWM_RESOLUTION = 16; // 16-bit resolution for fine control
-const int SERVO_PWM_MAX = 65535; // Max value for 16-bit
-// Servo pulse width: 500-2500 microseconds (0.5ms to 2.5ms) maps to 0-180 degrees
-const int SERVO_PULSE_MIN_US = 500;  // 0 degrees
-const int SERVO_PULSE_MAX_US = 2500; // 180 degrees
-const int SERVO_PULSE_CENTER_US = 1500; // 90 degrees (center)
-
-bool servoEnabled = false;
-float servoPosition = 90.0; // Start at center (0-180 degrees)
-int servoDirection = 1; // 1 = sweeping right, -1 = sweeping left
-float servoSweepSpeed = 5.0; // Degrees per update (default 5.0 - medium speed)
-const int SERVO_MIN_ANGLE = 0;
-const int SERVO_MAX_ANGLE = 180;
-const int SERVO_UPDATE_PERIOD_MS = 50; // Update servo position every 50ms
-unsigned long prevServoMillis = 0;
-
 // Sensor Instances
-MAX6675 thermocouple1(SCK_PIN, CS1_PIN, SO_PIN);
-MAX6675 thermocouple2(SCK_PIN, CS2_PIN, SO_PIN);
-MAX6675 thermocouple3(SCK_PIN, CS3_PIN, SO_PIN);
-MAX6675 thermocouple4(SCK_PIN, CS4_PIN, SO_PIN);
-MAX6675* thermocouples[NUM_ZONES] = {&thermocouple1, &thermocouple2, &thermocouple3, &thermocouple4};
+const int thermocoupleCS[NUM_ZONES] = {CS1_PIN, CS2_PIN, CS3_PIN, CS4_PIN};
+Adafruit_MAX31856* thermocouples[NUM_ZONES];
+bool thermocoupleFound[NUM_ZONES] = {false, false, false, false};
+const unsigned long SENSOR_READ_PERIOD_MS = 200; // MAX31856 continuous conversion ~100 ms with 60 Hz filter
+unsigned long prevSensorMillis = 0;
 
 // --- Helper Functions ---
 void sendCanFloat(uint32_t id, float value) {
@@ -161,11 +138,42 @@ void sendCanString(uint32_t id, String str) {
     }
 }
 
+void setupSensors() {
+    // Deselect every chip before the bus starts so none of them drive MISO
+    for (int i = 0; i < NUM_ZONES; i++) {
+        pinMode(thermocoupleCS[i], OUTPUT);
+        digitalWrite(thermocoupleCS[i], HIGH);
+    }
+    SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN);
+    for (int i = 0; i < NUM_ZONES; i++) {
+        thermocouples[i] = new Adafruit_MAX31856(thermocoupleCS[i], &SPI);
+        thermocoupleFound[i] = thermocouples[i]->begin();
+        if (!thermocoupleFound[i]) {
+            Serial.printf("TC%d (Zone %d) on CS GPIO%d not found!\n", i, i+1, thermocoupleCS[i]);
+            continue;
+        }
+        thermocouples[i]->setThermocoupleType(MAX31856_TCTYPE_K);
+        thermocouples[i]->setNoiseFilter(MAX31856_NOISE_FILTER_60HZ);
+        thermocouples[i]->setConversionMode(MAX31856_CONTINUOUS);
+    }
+    Serial.println("MAX31856 thermocouples initialized.");
+}
+
 void readAllSensors() {
     for (int i = 0; i < NUM_ZONES; i++) {
-        double tempC = thermocouples[i]->readCelsius();
-        // The Adafruit library returns NAN on fault
-        actualTemp[i] = tempC;
+        if (!thermocoupleFound[i]) {
+            actualTemp[i] = NAN;
+            continue;
+        }
+        uint8_t fault = thermocouples[i]->readFault();
+        float tempC = thermocouples[i]->readThermocoupleTemperature();
+        // NAN on fault (open TC, out of range, etc.) so the control logic forces the zone OFF
+        if (fault) {
+            if (!isnan(actualTemp[i])) Serial.printf("Zone %d: thermocouple FAULT 0x%02X\n", i+1, fault);
+            actualTemp[i] = NAN;
+        } else {
+            actualTemp[i] = tempC;
+        }
     }
 }
 
@@ -247,59 +255,6 @@ void checkCanMessages() {
                 break;
             }
 
-            // --- Motor Commands ---
-            case CAN_ID_CMD_MOTOR_STATE: {
-                char data[9] = {0};
-                memcpy(data, rxFrame.data, rxFrame.data_length_code);
-                String cmdStr(data);
-                Serial.printf("RX: Motor Command: %s\n", cmdStr.c_str());
-                
-                if (cmdStr == "ON" || cmdStr == "on") {
-                    servoEnabled = true;
-                    Serial.println("Motor: Servo sweep ENABLED");
-                    Serial.printf("Motor: Current position: %.1f, Speed: %.2f deg/update\n", servoPosition, servoSweepSpeed);
-                } else if (cmdStr == "OFF" || cmdStr == "off") {
-                    servoEnabled = false;
-                    // Stop in place - don't change position
-                    Serial.printf("Motor: Servo sweep DISABLED (stopped at %.1f°)\n", servoPosition);
-                }
-                break;
-            }
-            case CAN_ID_CMD_MOTOR_RPM: {
-                char data[9] = {0};
-                memcpy(data, rxFrame.data, rxFrame.data_length_code);
-                String cmdStr(data);
-                Serial.printf("RX: Motor RPM Command: %s\n", cmdStr.c_str());
-                
-                // Parse "RPMxx.x" format
-                if (cmdStr.startsWith("RPM") || cmdStr.startsWith("rpm")) {
-                    String rpmStr = cmdStr.substring(3); // Extract number after "RPM"
-                    float rpm = rpmStr.toFloat();
-                    
-                    Serial.printf("Motor: Parsed RPM string '%s' -> value: %.2f\n", rpmStr.c_str(), rpm);
-                    
-                    // Convert RPM to sweep speed (degrees per update)
-                    // For a full sweep (180 degrees), we want to complete it in some reasonable time
-                    // RPM of 1 = slow, RPM of 10 = fast
-                    // Map RPM to degrees per update (higher RPM = faster sweep)
-                    // Scale: RPM 1.0 -> 2.0 deg/update, RPM 10.0 -> 20.0 deg/update (much faster)
-                    if (rpm < 1.0) {
-                        servoSweepSpeed = 2.0;
-                    } else if (rpm > 10.0) {
-                        servoSweepSpeed = 20.0;
-                    } else {
-                        // Linear mapping: (rpm - 1.0) / (10.0 - 1.0) * (20.0 - 2.0) + 2.0
-                        servoSweepSpeed = ((rpm - 1.0) / 9.0) * 18.0 + 2.0;
-                    }
-                    
-                    Serial.printf("Motor: RPM set to %.1f, sweep speed: %.2f deg/update (updates every %dms = %.2f deg/sec)\n", 
-                                  rpm, servoSweepSpeed, SERVO_UPDATE_PERIOD_MS, servoSweepSpeed * (1000.0 / SERVO_UPDATE_PERIOD_MS));
-                } else {
-                    Serial.printf("Motor: RPM command '%s' doesn't start with 'RPM'\n", cmdStr.c_str());
-                }
-                break;
-            }
-            
             // Handle the heartbeat ID (do nothing, just resets watchdog)
             case CAN_ID_CMD_HEARTBEAT:
                 // Serial.println("RX: Heartbeat");
@@ -398,71 +353,18 @@ void runControlLogic() {
 }
 
 void checkCanWatchdog() {
-    if (millis() - lastCanMessageTime > 5) {
+    if (millis() - lastCanMessageTime > CAN_WATCHDOG_TIMEOUT_MS) {
         // CAN connection lost!
-        Serial.println("CRITICAL ERROR: CAN Watchdog Timeout! Forcing all heaters OFF and motor OFF.");
+        Serial.println("CRITICAL ERROR: CAN Watchdog Timeout! Forcing all heaters OFF.");
         for (int i = 0; i < NUM_ZONES; i++) {
             zoneState[i] = "OFF"; // Force state to OFF
             commandedState[i] = "OFF"; // Reset command
             // --- FIX: Use ledcWriteChannel ---
             ledcWriteChannel(heaterPWMChannels[i], 0); // Turn off heater
         }
-        // Turn off motor/servo
-        servoEnabled = false;
-        // Servo will stop in place (position stays where it is)
         
         // Reset timer to prevent spamming logs
         lastCanMessageTime = millis(); 
-    }
-}
-
-void setServoPosition(float angle) {
-    // Clamp angle to valid range
-    if (angle < SERVO_MIN_ANGLE) angle = SERVO_MIN_ANGLE;
-    if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
-    
-    // Convert angle (0-180) to pulse width in microseconds (500-2500)
-    float pulseWidthUs = SERVO_PULSE_MIN_US + (angle / 180.0) * (SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US);
-    
-    // Convert microseconds to duty cycle value
-    // For 50Hz (20ms period), duty cycle = pulseWidthUs / 20000
-    float dutyCycle = pulseWidthUs / 20000.0;
-    
-    // Convert to PWM value (0 to SERVO_PWM_MAX)
-    uint32_t pwmValue = (uint32_t)(dutyCycle * SERVO_PWM_MAX);
-    
-    // Write to PWM channel (ESP32 Core 3.x uses ledcWriteChannel)
-    ledcWriteChannel(SERVO_PWM_CHANNEL, pwmValue);
-}
-
-void updateServoSweep() {
-    if (!servoEnabled) {
-        return; // Servo is disabled, don't update
-    }
-
-    // Update servo position based on direction and speed
-    servoPosition += (servoDirection * servoSweepSpeed);
-    
-    // Check boundaries and reverse direction
-    if (servoPosition >= SERVO_MAX_ANGLE) {
-        servoPosition = SERVO_MAX_ANGLE;
-        servoDirection = -1; // Reverse direction
-        Serial.printf("Motor: Servo at max (180°), reversing direction\n");
-    } else if (servoPosition <= SERVO_MIN_ANGLE) {
-        servoPosition = SERVO_MIN_ANGLE;
-        servoDirection = 1; // Reverse direction
-        Serial.printf("Motor: Servo at min (0°), reversing direction\n");
-    }
-    
-    // Write new position to servo
-    setServoPosition(servoPosition);
-    
-    // Debug output every 20 updates (about once per second)
-    static int debugCounter = 0;
-    if (++debugCounter >= 20) {
-        debugCounter = 0;
-        Serial.printf("Motor: Servo position: %.1f°, direction: %d, speed: %.2f deg/update\n", 
-                      servoPosition, servoDirection, servoSweepSpeed);
     }
 }
 
@@ -477,11 +379,6 @@ void sendAllStatus() {
         sendCanString(CAN_ID_STATUS_STATE_1 + i, zoneState[i]);
         Serial.printf("Z%d State: %s | ", i+1, zoneState[i].c_str());
     }
-    
-    // Send Motor State
-    String motorStateStr = servoEnabled ? "ON" : "OFF";
-    sendCanString(CAN_ID_STATUS_MOTOR_STATE, motorStateStr);
-    Serial.printf("Motor: %s", motorStateStr.c_str());
     Serial.println();
 }
 
@@ -531,27 +428,9 @@ void setup() {
     }
     Serial.println("PID controllers initialized.");
 
-    // 4. Initialize Servo (using ESP32 LEDC PWM)
-    if (ledcAttachChannel(SERVO_PIN, SERVO_PWM_FREQ, SERVO_PWM_RESOLUTION, SERVO_PWM_CHANNEL)) {
-        setServoPosition(90.0); // Start at center position
-        Serial.println("Servo initialized on pin 22 (center position).");
-        
-        // Test servo by moving to extremes
-        Serial.println("Servo test: Moving to 0°...");
-        setServoPosition(0.0);
-        delay(1000);
-        Serial.println("Servo test: Moving to 180°...");
-        setServoPosition(180.0);
-        delay(1000);
-        Serial.println("Servo test: Returning to center...");
-        setServoPosition(90.0);
-        delay(500);
-    } else {
-        Serial.println("ERROR: Failed to attach servo PWM channel!");
-    }
-
-    // 5. Initialize Sensors
-    delay(500); // Wait for sensors to stabilize
+    // 4. Initialize Sensors
+    setupSensors();
+    delay(500); // Let the first continuous conversions complete
     readAllSensors();
     Serial.println("Initialization complete.");
 }
@@ -559,8 +438,11 @@ void setup() {
 void loop() {
     unsigned long currentMillis = millis();
 
-    // 1. Always read sensors
-    readAllSensors();
+    // 1. Read sensors periodically (MAX31856 updates ~every 100 ms)
+    if (currentMillis - prevSensorMillis >= SENSOR_READ_PERIOD_MS) {
+        prevSensorMillis = currentMillis;
+        readAllSensors();
+    }
 
     // 2. Always check for incoming commands
     checkCanMessages();
@@ -572,12 +454,6 @@ void loop() {
     if (currentMillis - prevControlMillis >= CONTROL_LOOP_PERIOD_MS) {
         prevControlMillis = currentMillis;
         runControlLogic();
-    }
-
-    // 5. Update servo sweep periodically
-    if (currentMillis - prevServoMillis >= SERVO_UPDATE_PERIOD_MS) {
-        prevServoMillis = currentMillis;
-        updateServoSweep();
     }
 
     // 5b. AC servo: safety checks + status frames

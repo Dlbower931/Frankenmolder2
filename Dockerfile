@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y \
     # NEW CAN dependencies
     can-utils \
     python3-can \
+    # 'ip' command, used by start_node.sh to configure can0
+    iproute2 \
     # System tools (like sudo)
     sudo \
     && rm -rf /var/lib/apt/lists/*

@@ -223,8 +223,9 @@ class HmiCanvas(tk.Frame):
         """Label on the left, big value right-aligned, unit at the far right."""
         self.text(x0 + 8, y, label, self.T_LABEL, anchor="w", fill=C["dim"])
         s, col = self._fmt(val, fmt, wired)
-        self.text(x1 - 30, y, s, size, mono=True, bold=True, anchor="e",
-                  fill=col or color or C["value"])
+        uw = len(unit) * self.T_UNIT * 0.6 + 6 if unit else 0   # room for the unit
+        self.text(x1 - 9 - max(uw, 14 if unit else 0) - 4, y, s, size, mono=True, bold=True,
+                  anchor="e", fill=col or color or C["value"])
         self.text(x1 - 7, y + 1, unit, self.T_UNIT, anchor="e", fill=C["dim"])
 
     def cell(self, x, y, label, val, unit, fmt="{:.1f}", size=20, color=None, wired=True):
@@ -408,7 +409,8 @@ class HmiCanvas(tk.Frame):
         self.text(x0 + 11, y0 + 16, label, 13, bold=True, anchor="w", fill=C["dim"])
         self.text(x1 - 11, y0 + 16, "TAP ✎", 13, bold=True, anchor="e", fill=C["accent"])
         s = fmt.format(value) if _valid(value) else "---"
-        self.text(x1 - 36, y1 - 20, s, size, mono=True, bold=True, anchor="e",
+        uw = len(unit) * 13 * 0.6 + 8
+        self.text(x1 - 11 - uw, y1 - 20, s, size, mono=True, bold=True, anchor="e",
                   fill=(color or C["setp"]) if _valid(value) else C["dim"])
         self.text(x1 - 11, y1 - 18, unit, 13, anchor="e", fill=C["dim"])
         if on_press:

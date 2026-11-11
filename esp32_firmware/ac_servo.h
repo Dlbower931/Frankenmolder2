@@ -4,7 +4,7 @@
  *
  * Generates step pulses + direction for the servo drive with ramps, exact pulse
  * counts for position moves, and safety stops. Driven by its own CAN IDs, separate
- * from the old hobby-servo motor commands (0x220/0x221), which are left as they are.
+ * from the heater zone commands.
  *
  * REQUIRED LIBRARY: FastAccelStepper (by gin66). Compile-tested with v2.0.1 on ESP32 core 3.3.12.
  *

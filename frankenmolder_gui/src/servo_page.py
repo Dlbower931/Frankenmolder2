@@ -13,7 +13,7 @@ The page only draws and reports taps. The GUI node passes in:
     ask_number(current, lo, hi, apply)   opens the number pad, calls apply(value)
 and feeds set_data() a dict whose "servo" entry looks like blank_servo().
 
-Standalone preview with simulated drive:  python3 servo_page.py [--size 800x480]
+Standalone preview with simulated drive:  python3 servo_page.py [--size 1024x600]
 """
 
 import time
@@ -34,7 +34,9 @@ def blank_servo():
 
 def fmt_hz(hz):
     hz = abs(hz)
-    return f"{hz / 1000:.1f}k" if hz >= 1000 else f"{hz:.0f}"
+    if hz >= 1000:
+        return f"{hz // 1000:.0f}k" if hz % 1000 == 0 else f"{hz / 1000:.1f}k"
+    return f"{hz:.0f}"
 
 
 class ServoTestPage(HmiCanvas):
@@ -103,155 +105,148 @@ class ServoTestPage(HmiCanvas):
         return name in (self.servo.get("flags") or [])
 
     # ------------------------------------------------------------ drawing
+    # Virtual space is hmi.VW x VH (1000x525 = the 7" screen's canvas at 0.8 scale).
+    TOP_Y = (44, 316)
+    BOT_Y = (324, 520)
+
     def render(self):
         sv = self.servo
         self.begin()
         self.background()
         link = sv.get("link")
-        self.title_bar("SERVO TEST",
-                       "ESP32 SERVO LINK OK" if link else "NO SERVO STATUS FROM ESP32",
+        self.title_bar("SERVO LINK OK" if link else "NO SERVO STATUS FROM ESP32",
                        C["ok"] if link else C["alarm"])
-        self.section(46, "PULSE COMMAND")
         self._command_panel()
         self._drive_panel()
         self._actual_panel(sv)
-        self.section(362, "POSITION / SETUP")
         self._move_panel()
         self._setup_panel()
-        self.event_panel(708, 372, 988, 590, "COMMANDS")
+        self.event_panel(680, self.BOT_Y[0], 992, self.BOT_Y[1], "COMMANDS")
 
     def _command_panel(self):
-        x0, y0, x1, y1 = 12, 56, 420, 352
-        self.panel(x0, y0, x1, y1, "FREQUENCY")
-        self.value_button(x0 + 8, y0 + 26, x0 + 240, y0 + 78, "TARGET", self.target_hz, "Hz",
+        x0, x1 = 8, 416
+        y0, y1 = self.TOP_Y
+        mrpm = self.motor_rpm(self.target_hz)
+        warn = mrpm > 3000
+        self.panel(x0, y0, x1, y1, "FREQUENCY", chip="OVER 3000 RPM" if warn else None,
+                   chip_color=C["warn"])
+        self.value_button(x0 + 8, y0 + 34, x0 + 236, y0 + 94, "TARGET", self.target_hz, "Hz",
                           fmt="{:.0f}",
                           on_press=lambda: self.ask_number(self.target_hz, 0, MAX_HZ,
                                                            self._set_target))
-        self.lamp_button(x0 + 246, y0 + 24, x0 + 324, y0 + 80, "FWD", FACE["blue"],
+        self.lamp_button(x0 + 244, y0 + 32, x0 + 324, y0 + 96, "FWD", FACE["blue"],
                          lamp_on=self.direction > 0, lamp_color=LAMP["blue"],
-                         on_press=lambda: self._set_dir(1), size=12)
-        self.lamp_button(x0 + 328, y0 + 24, x1 - 8, y0 + 80, "REV", FACE["blue"],
+                         on_press=lambda: self._set_dir(1), size=16)
+        self.lamp_button(x0 + 328, y0 + 32, x1 - 8, y0 + 96, "REV", FACE["blue"],
                          lamp_on=self.direction < 0, lamp_color=LAMP["blue"],
-                         on_press=lambda: self._set_dir(-1), size=12)
+                         on_press=lambda: self._set_dir(-1), size=16)
         # presets
-        self.text(x0 + 10, y0 + 92, "PRESETS", 8, bold=True, anchor="w", fill=C["dim"])
         bw = (x1 - x0 - 16) / len(PRESETS)
         for i, hz in enumerate(PRESETS):
             bx = x0 + 8 + i * bw
-            self.lamp_button(bx, y0 + 100, bx + bw - 4, y0 + 152, fmt_hz(hz), FACE["neutral"],
+            self.lamp_button(bx, y0 + 104, bx + bw - 4, y0 + 160, fmt_hz(hz), FACE["neutral"],
                              lamp_on=self.target_hz == hz, lamp_color=LAMP["amber"],
-                             on_press=lambda hz=hz: self._set_target(hz), size=11)
+                             on_press=lambda hz=hz: self._set_target(hz), size=15)
         # acceleration
-        self.value_button(x0 + 8, y0 + 162, x0 + 240, y0 + 210, "ACCEL", self.accel, "Hz/s",
-                          fmt="{:.0f}", size=17,
+        self.value_button(x0 + 8, y0 + 168, x0 + 236, y0 + 226, "ACCEL", self.accel, "Hz/s",
+                          fmt="{:.0f}", size=22,
                           on_press=lambda: self.ask_number(self.accel, 100, MAX_ACCEL,
                                                            self._set_accel))
         ramp_s = self.target_hz / self.accel if self.accel else 0
-        self.text(x0 + 252, y0 + 176, "RAMP 0 → TARGET", 8, bold=True, anchor="w", fill=C["dim"])
-        self.text(x0 + 252, y0 + 196, f"{ramp_s:.2f} s", 16, mono=True, bold=True, anchor="w",
-                  fill=C["value"])
+        self.cell(x0 + 252, y0 + 180, "RAMP TIME", ramp_s, "s", "{:.2f}")
         # what that frequency means at the motor and screw
-        mrpm = self.motor_rpm(self.target_hz)
-        self.readout(x0, x0 + 200, y0 + 236, "MOTOR", mrpm, "rpm", size=15)
-        self.readout(x0 + 200, x1, y0 + 236, "SCREW", mrpm / GEARBOX, "rpm", "{:.2f}", size=15)
-        warn = mrpm > 3000
-        self.text(x0 + 10, y0 + 264,
-                  "OVER 3000 MOTOR RPM - check drive limit (Pr075)" if warn else
-                  f"at {self.pulses_per_rev} pulses/rev, {GEARBOX:.0f}:1 gearbox",
-                  8, anchor="w", fill=C["warn"] if warn else C["dim"])
-        self.text(x0 + 10, y0 + 280, "Changes apply live while running", 8, anchor="w",
-                  fill=C["dim"])
+        self.cell(x0 + 12, y0 + 238, "MOTOR", mrpm, "rpm", "{:.0f}",
+                  color=C["warn"] if warn else None)
+        self.cell(x0 + 180, y0 + 238, "SCREW", mrpm / GEARBOX, "rpm", "{:.2f}")
 
     def _drive_panel(self):
-        x0, y0, x1, y1 = 428, 56, 700, 352
+        x0, x1 = 424, 672
+        y0, y1 = self.TOP_Y
         st = self.servo.get("state")
         moving = st in ("RUNNING", "MOVING", "STOPPING")
         self.panel(x0, y0, x1, y1, "DRIVE", chip=st or "---",
                    chip_color=C["ok"] if moving else C["alarm"] if st == "FAULT" else C["off"])
         mid = (x0 + x1) / 2
-        self.lamp_button(x0 + 8, y0 + 26, mid - 4, y0 + 176, "RUN", FACE["start"],
+        self.lamp_button(x0 + 8, y0 + 34, mid - 4, y0 + 150, "RUN", FACE["start"],
                          lamp_on=st == "RUNNING", lamp_color=LAMP["green"],
-                         on_press=lambda: self._cmd("RUN"), size=17)
-        self.lamp_button(mid + 4, y0 + 26, x1 - 8, y0 + 176, "STOP", FACE["stop"],
+                         on_press=lambda: self._cmd("RUN"), size=22)
+        self.lamp_button(mid + 4, y0 + 34, x1 - 8, y0 + 150, "STOP", FACE["stop"],
                          lamp_on=not moving, lamp_color=LAMP["red"],
-                         on_press=lambda: self._cmd("STOP"), size=17)
-        self.lamp_button(x0 + 8, y0 + 184, x1 - 8, y1 - 34, "E-STOP", "#d1242f",
+                         on_press=lambda: self._cmd("STOP"), size=22)
+        self.lamp_button(x0 + 8, y0 + 158, x1 - 8, y1 - 30, "E-STOP", "#d1242f",
                          lamp_on=st == "FAULT", lamp_color=LAMP["amber"],
-                         on_press=lambda: self._cmd("ESTOP"), size=17)
-        self.text(mid, y1 - 18, "STOP ramps down · E-STOP cuts pulses instantly", 8,
-                  fill=C["dim"])
+                         on_press=lambda: self._cmd("ESTOP"), size=22)
+        self.text(mid, y1 - 14, "STOP ramps · E-STOP is instant", 13, fill=C["dim"])
 
     def _actual_panel(self, sv):
-        x0, y0, x1, y1 = 708, 56, 988, 352
+        x0, x1 = 680, 992
+        y0, y1 = self.TOP_Y
         self.panel(x0, y0, x1, y1, "ACTUAL")
         hz = sv.get("actual_hz")
-        self.gauge(x0 + 72, y0 + 92, 50, abs(hz) / 1000 if _valid(hz) else None, MAX_HZ / 1000,
+        self.gauge(x0 + 66, y0 + 84, 44, abs(hz) / 1000 if _valid(hz) else None, MAX_HZ / 1000,
                    "kHz", "{:.1f}", setp=self.target_hz / 1000)
         pos = sv.get("position")
-        self.readout(x0 + 136, x1, y0 + 44, "HZ", abs(hz) if _valid(hz) else None, "", "{:.0f}",
-                     size=15)
-        self.readout(x0 + 136, x1, y0 + 72, "DIR",
+        self.readout(x0 + 124, x1, y0 + 50, "HZ", abs(hz) if _valid(hz) else None, "",
+                     "{:.0f}", size=20)
+        self.readout(x0 + 124, x1, y0 + 80, "DIR",
                      ("FWD" if hz >= 0 else "REV") if _valid(hz) and abs(hz) > 0 else None, "",
-                     size=13)
-        self.readout(x0 + 136, x1, y0 + 100, "MOTOR", self.motor_rpm(hz) if _valid(hz) else None,
-                     "rpm", size=13)
-        self.readout(x0, x1, y0 + 170, "POSITION", pos, "pls", "{:d}", size=15)
-        self.readout(x0, x1, y0 + 194, "MOTOR REVS",
-                     pos / self.pulses_per_rev if _valid(pos) else None, "rev", "{:.3f}", size=13)
-        echo = sv.get("target_echo")
-        self.readout(x0, x1, y0 + 218, "ESP32 TARGET", echo, "Hz", "{:.0f}", size=13,
-                     color=C["setp"])
-        cy = y0 + 240
+                     size=20)
+        self.readout(x0 + 124, x1, y0 + 110, "MOTOR",
+                     self.motor_rpm(hz) if _valid(hz) else None, "rpm", "{:.0f}", size=20)
+        self.readout(x0, x1, y0 + 152, "POSITION", pos, "pls", "{:d}", size=20)
+        self.readout(x0, x1, y0 + 180, "REVS", pos / self.pulses_per_rev if _valid(pos) else None,
+                     "rev", "{:.3f}", size=20)
+        self.readout(x0, x1, y0 + 208, "ESP32 TGT", sv.get("target_echo"), "Hz", "{:.0f}",
+                     size=20, color=C["setp"])
+        cy = y0 + 232
         w = (x1 - x0) / 4
         alarm_wired = self._flag("ALARM_INPUT")
-        self.indicator(x0 + w * 0.5, cy, "AT SPEED", self._flag("AT_SPEED"), LAMP["green"], w=48)
-        self.indicator(x0 + w * 1.5, cy, "LINK", bool(sv.get("link")), LAMP["green"], w=48)
-        self.indicator(x0 + w * 2.5, cy, "WATCHDOG", self._flag("WATCHDOG"), LAMP["amber"], w=48)
+        self.indicator(x0 + w * 0.5, cy, "AT SPD", self._flag("AT_SPEED"), LAMP["green"], w=52)
+        self.indicator(x0 + w * 1.5, cy, "LINK", bool(sv.get("link")), LAMP["green"], w=52)
+        self.indicator(x0 + w * 2.5, cy, "WDOG", self._flag("WATCHDOG"), LAMP["amber"], w=52)
         self.indicator(x0 + w * 3.5, cy, "ALARM" if alarm_wired else "ALM N/C",
-                       self._flag("ALARM"), LAMP["red"], w=48)
+                       self._flag("ALARM"), LAMP["red"], w=52)
 
     def _move_panel(self):
-        x0, y0, x1, y1 = 12, 372, 420, 590
+        x0, x1 = 8, 416
+        y0, y1 = self.BOT_Y
         st = self.servo.get("state")
-        self.panel(x0, y0, x1, y1, "POSITION MOVE")
-        self.value_button(x0 + 8, y0 + 26, x0 + 240, y0 + 78, "PULSES", self.move_pulses, "pls",
+        self.panel(x0, y0, x1, y1, "POSITION MOVE", chip="FROM STANDSTILL", chip_color=C["off"])
+        self.value_button(x0 + 8, y0 + 34, x0 + 236, y0 + 94, "PULSES", self.move_pulses, "pls",
                           fmt="{:.0f}",
                           on_press=lambda: self.ask_number(self.move_pulses, 1, 10000000,
                                                            self._set_pulses))
         revs = self.move_pulses / self.pulses_per_rev
-        self.text(x0 + 252, y0 + 40, "MOTOR REVS", 8, bold=True, anchor="w", fill=C["dim"])
-        self.text(x0 + 252, y0 + 62, f"{revs:.3f}", 16, mono=True, bold=True, anchor="w",
-                  fill=C["value"])
-        self.text(x0 + 252, y0 + 80, f"screw {revs / GEARBOX:.4f}", 8, mono=True, anchor="w",
+        self.cell(x0 + 252, y0 + 44, "MOTOR REVS", revs, "", "{:.3f}")
+        self.text(x0 + 252, y0 + 88, f"screw {revs / GEARBOX:.4f}", 13, mono=True, anchor="w",
                   fill=C["dim"])
-        self.lamp_button(x0 + 8, y0 + 90, x0 + 136, y1 - 26, "MOVE\n+", FACE["blue"],
+        self.lamp_button(x0 + 8, y0 + 102, x0 + 136, y1 - 6, "MOVE +", FACE["blue"],
                          lamp_on=st == "MOVING", lamp_color=LAMP["blue"],
-                         on_press=lambda: self._move(1), size=14)
-        self.lamp_button(x0 + 140, y0 + 90, x0 + 268, y1 - 26, "MOVE\n−", FACE["blue"],
+                         on_press=lambda: self._move(1))
+        self.lamp_button(x0 + 140, y0 + 102, x0 + 268, y1 - 6, "MOVE −", FACE["blue"],
                          lamp_on=st == "MOVING", lamp_color=LAMP["blue"],
-                         on_press=lambda: self._move(-1), size=14)
-        self.lamp_button(x0 + 272, y0 + 90, x1 - 8, y1 - 26, "ZERO\nPOS", FACE["neutral"],
+                         on_press=lambda: self._move(-1))
+        self.lamp_button(x0 + 272, y0 + 102, x1 - 8, y1 - 6, "ZERO", FACE["neutral"],
                          lamp_on=self.servo.get("position") == 0, lamp_color=LAMP["white"],
-                         on_press=lambda: self._cmd("ZERO"), size=13)
-        self.text(x0 + 10, y1 - 12, "Moves use the target frequency + accel, from standstill",
-                  8, anchor="w", fill=C["dim"])
+                         on_press=lambda: self._cmd("ZERO"))
 
     def _setup_panel(self):
-        x0, y0, x1, y1 = 428, 372, 700, 590
-        self.panel(x0, y0, x1, y1, "ELECTRONIC GEAR (DISPLAY)")
+        x0, x1 = 424, 672
+        y0, y1 = self.BOT_Y
+        self.panel(x0, y0, x1, y1, "PULSES / REV")
         mid = (x0 + x1) / 2
         for i, (ppr, a, b) in enumerate(GEAR_OPTIONS):
             bx0 = x0 + 8 if i == 0 else mid + 4
             bx1 = mid - 4 if i == 0 else x1 - 8
-            self.lamp_button(bx0, y0 + 26, bx1, y0 + 120, f"{a}\n{b}", FACE["neutral"],
+            self.lamp_button(bx0, y0 + 34, bx1, y0 + 116, f"{b.split()[0]}\n{a}", FACE["neutral"],
                              lamp_on=self.pulses_per_rev == ppr, lamp_color=LAMP["amber"],
-                             on_press=lambda ppr=ppr: self._set_gear(ppr), size=11)
-        lines = ("Only changes the RPM maths on this page.",
-                 "Set Pr029/Pr030 on the drive to match.",
-                 "Limits: ESP32 200 kHz · drive 500 kHz (diff).",
-                 "Drive is always enabled (SON wired on).")
+                             on_press=lambda ppr=ppr: self._set_gear(ppr), size=15)
+        lines = ("Display maths only - set",
+                 "Pr029/Pr030 on the drive.",
+                 "Max: ESP32 200k, drive 500k",
+                 "Drive always enabled (SON)")
         for i, t in enumerate(lines):
-            self.text(x0 + 10, y0 + 140 + i * 17, t, 8, anchor="w",
+            self.text(x0 + 10, y0 + 132 + i * 16, t, 13, anchor="w",
                       fill=C["warn"] if i == 3 else C["dim"])
 
 
@@ -312,7 +307,7 @@ def main():
     import tkinter as tk
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("--size", default="1024x600")
+    ap.add_argument("--size", default="800x420", help="800x420 = 7in screen minus tabs/status")
     args = ap.parse_args()
     root = tk.Tk()
     root.title("Frankenmolder - Servo test")
