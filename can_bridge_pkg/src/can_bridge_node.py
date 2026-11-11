@@ -59,7 +59,8 @@ CAN_ID_STATUS_SERVO = 0x130      # [u8 state][u8 flags][2 pad][f32 actual_hz sig
 CAN_ID_STATUS_SERVO_POS = 0x131  # [i32 position][i32 target_hz echo]
 SERVO_CMD_CODES = {"RUN": 1, "STOP": 2, "ESTOP": 3, "ZERO": 4}
 SERVO_STATES = {0: "IDLE", 1: "RUNNING", 2: "MOVING", 3: "STOPPING", 4: "FAULT"}
-SERVO_FLAG_NAMES = ((0x01, "ALARM"), (0x02, "WATCHDOG"), (0x04, "AT_SPEED"), (0x08, "ALARM_INPUT"))
+SERVO_FLAG_NAMES = ((0x01, "ALARM"), (0x02, "WATCHDOG"), (0x04, "AT_SPEED"), (0x08, "ALARM_INPUT"),
+                    (0x10, "SON"))
 
 
 def pack_servo_speed(target_hz, accel):

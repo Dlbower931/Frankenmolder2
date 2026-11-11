@@ -199,13 +199,14 @@ class ServoTestPage(HmiCanvas):
         self.readout(x0, x1, y0 + 208, "ESP32 TGT", sv.get("target_echo"), "Hz", "{:.0f}",
                      size=20, color=C["setp"])
         cy = y0 + 232
-        w = (x1 - x0) / 4
+        w = (x1 - x0) / 5
         alarm_wired = self._flag("ALARM_INPUT")
-        self.indicator(x0 + w * 0.5, cy, "AT SPD", self._flag("AT_SPEED"), LAMP["green"], w=52)
-        self.indicator(x0 + w * 1.5, cy, "LINK", bool(sv.get("link")), LAMP["green"], w=52)
-        self.indicator(x0 + w * 2.5, cy, "WDOG", self._flag("WATCHDOG"), LAMP["amber"], w=52)
-        self.indicator(x0 + w * 3.5, cy, "ALARM" if alarm_wired else "ALM N/C",
-                       self._flag("ALARM"), LAMP["red"], w=52)
+        self.indicator(x0 + w * 0.5, cy, "SON", self._flag("SON"), LAMP["green"], w=44)
+        self.indicator(x0 + w * 1.5, cy, "AT SPD", self._flag("AT_SPEED"), LAMP["green"], w=44)
+        self.indicator(x0 + w * 2.5, cy, "LINK", bool(sv.get("link")), LAMP["green"], w=44)
+        self.indicator(x0 + w * 3.5, cy, "WDOG", self._flag("WATCHDOG"), LAMP["amber"], w=44)
+        self.indicator(x0 + w * 4.5, cy, "ALARM" if alarm_wired else "ALM N/C",
+                       self._flag("ALARM"), LAMP["red"], w=44)
 
     def _move_panel(self):
         x0, x1 = 8, 416
@@ -243,8 +244,8 @@ class ServoTestPage(HmiCanvas):
                              on_press=lambda ppr=ppr: self._set_gear(ppr), size=15)
         lines = ("Display maths only - set",
                  "Pr029/Pr030 on the drive.",
-                 "Max: ESP32 200k, drive 500k",
-                 "Drive always enabled (SON)")
+                 "Max 200 kHz (24 V inputs)",
+                 "SON: on at RUN/MOVE, off at STOP")
         for i, t in enumerate(lines):
             self.text(x0 + 10, y0 + 132 + i * 16, t, 13, anchor="w",
                       fill=C["warn"] if i == 3 else C["dim"])
@@ -259,6 +260,7 @@ class DemoServo:
         self.target = 0.0
         self.accel = 20000.0
         self.mode = "IDLE"
+        self.son = False
         self.pos = 0.0
         self.move_left = 0
         self.last = time.time()
@@ -268,17 +270,17 @@ class DemoServo:
 
     def cmd(self, c):
         if c == "RUN":
-            self.mode = "RUNNING"
+            self.mode, self.son = "RUNNING", True
         elif c == "STOP":
             self.mode = "STOPPING"
         elif c == "ESTOP":
-            self.mode, self.hz = "IDLE", 0.0
+            self.mode, self.hz, self.son = "IDLE", 0.0, False
         elif c == "ZERO" and self.hz == 0:
             self.pos = 0
 
     def move(self, pulses):
         if self.hz == 0:
-            self.mode, self.move_left = "MOVING", pulses
+            self.mode, self.move_left, self.son = "MOVING", pulses, True
 
     def step(self):
         now = time.time()
@@ -294,12 +296,12 @@ class DemoServo:
             if abs(self.move_left) < abs(self.hz * dt) + 1:
                 self.mode, self.hz, self.move_left = "IDLE", 0.0, 0
         if self.mode == "STOPPING" and self.hz == 0:
-            self.mode = "IDLE"
+            self.mode, self.son = "IDLE", False
         state = self.mode if (self.hz != 0 or self.mode == "MOVING") else "IDLE"
         at_speed = self.mode == "RUNNING" and abs(self.hz - self.target) < max(1, abs(self.target) * 0.01)
         return {"servo": {"link": True, "state": state, "actual_hz": self.hz,
                           "position": int(self.pos), "target_echo": self.target,
-                          "flags": ["AT_SPEED"] if at_speed else []}}
+                          "flags": (["AT_SPEED"] if at_speed else []) + (["SON"] if self.son else [])}}
 
 
 def main():
