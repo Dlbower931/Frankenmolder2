@@ -36,9 +36,24 @@ rosrun frankenmolder_utils topic_watchdog.py &
 echo "Topic Watchdog launch command sent."
 
 # --- START THE GUI NODE ---
-echo "Attempting to launch GUI Node..."
-rosrun frankenmolder_gui extruder_gui_node.py &
-echo "GUI Node launch command sent."
+# On boot the container (restart: always) can come up before the desktop has started
+# and before the host has run `xhost +local:docker` (see setup_host_display.sh).
+# Wait in the background until a Tk window can actually open on $DISPLAY, then launch.
+(
+    echo "Waiting for X display ${DISPLAY:-unset} to accept connections..."
+    waited=0
+    until python3 -c "import tkinter; tkinter.Tk().destroy()" >/dev/null 2>&1; do
+        if [ $((waited % 30)) -eq 0 ]; then
+            echo "  display not ready yet (${waited}s). Is the desktop up and has xhost +local:docker run?"
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    echo "Display ready after ${waited}s. Launching GUI Node..."
+    rosrun frankenmolder_gui extruder_gui_node.py
+    echo "GUI Node exited."
+) &
+echo "GUI Node launch scheduled (waits for display)."
 
 # --- Start Continuous Background Logging Loop ---
 echo "Starting continuous background rosbag recording (30 second segments)..."
