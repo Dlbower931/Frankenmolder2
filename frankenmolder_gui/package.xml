@@ -10,6 +10,7 @@
 
   <depend>rospy</depend>
   <depend>std_msgs</depend>
+  <depend>rosgraph_msgs</depend>
   
   <export>
     <build_type>catkin</build_type>

@@ -2,6 +2,9 @@
 
 import rospy
 from std_msgs.msg import Float32, Int32, String
+from rosgraph_msgs.msg import Log
+import json
+from collections import deque
 import tkinter as tk
 from tkinter import ttk # Import the themed toolkit for tabs (Notebook)
 from threading import Thread, Lock
@@ -11,6 +14,8 @@ import time
 from process_dashboard import ControlRoomDashboard, blank_data
 from extruder_page import ExtruderPage
 from servo_page import ServoTestPage, blank_servo
+from watchdog_page import (ROSOUT_LEVELS, LinkAlarmPopup, LinkMonitor, WatchdogPage,
+                           build_alarms)
 import hmi
 
 # --- Configuration ---
@@ -37,6 +42,10 @@ latest_servo = {"state": None, "flags": [], "actual_hz": None, "position": None,
                 "target_echo": None}
 last_servo_time = 0.0
 SERVO_LINK_TIMEOUT_S = 1.0  # ESP32 sends servo status every 100 ms
+# Watchdog tab: decoded /watchdog/status and the ROS log (/rosout_agg)
+latest_watchdog = None
+last_watchdog_time = 0.0
+log_entries = deque(maxlen=500)
 
 # Lock to prevent race conditions when accessing shared data
 data_lock = Lock()
@@ -238,6 +247,15 @@ class ExtruderGUI(tk.Frame):
             ask_number=self.open_servo_number_pad)
         self.notebook.add(self.servo_frame, text='Servo Test')
 
+        # --- Tab 4: Watchdog (CAN link health, alarms, ROS log) ---
+        self.watchdog_frame = WatchdogPage(self.notebook, on_clear_logs=self.clear_logs)
+        self.notebook.add(self.watchdog_frame, text='Watchdog')
+        self._watchdog_tab_text = None
+
+        # CAN link failure alarm (flashing popup until acknowledged)
+        self.link_monitor = LinkMonitor()
+        self.link_popup = None
+
         self.notebook.pack(expand=True, fill='both', padx=0, pady=0)
 
         # --- Status Bar (Shared by all tabs) ---
@@ -315,6 +333,11 @@ class ExtruderGUI(tk.Frame):
                 self.subscribers[f"servo_{key}"] = rospy.Subscriber(
                     topic, msg_type, self.update_servo_callback, callback_args=(key, conv))
 
+            # --- Watchdog ---
+            self.subscribers["watchdog_status"] = rospy.Subscriber(
+                '/watchdog/status', String, self.update_watchdog_callback)
+            self.subscribers["rosout"] = rospy.Subscriber('/rosout_agg', Log, self.update_log_callback)
+
             rospy.loginfo("GUI: ROS Comms Initialized.")
             self.message_var.set("ROS Connection Established.")
             return True
@@ -375,6 +398,27 @@ class ExtruderGUI(tk.Frame):
             latest_servo[key] = conv(msg.data)
             last_servo_time = time.time()
 
+    def update_watchdog_callback(self, msg):
+        try:
+            status = json.loads(msg.data)
+        except ValueError as e:
+            rospy.logwarn(f"GUI: bad /watchdog/status JSON: {e}")
+            return
+        with data_lock:
+            global latest_watchdog, last_watchdog_time
+            latest_watchdog = status
+            last_watchdog_time = time.time()
+
+    def update_log_callback(self, msg):
+        entry = {"t": msg.header.stamp.to_sec() or time.time(),
+                 "lvl": ROSOUT_LEVELS.get(msg.level, "INFO"), "node": msg.name, "msg": msg.msg}
+        with data_lock:
+            log_entries.append(entry)
+
+    def clear_logs(self):
+        with data_lock:
+            log_entries.clear()
+
     def build_dashboard_data(self):
         """Snapshot the shared ROS state into the dashboard's data format."""
         nan_to_none = lambda v: None if (v is None or math.isnan(v)) else v
@@ -398,13 +442,55 @@ class ExtruderGUI(tk.Frame):
                 "rpm_act": (rpm_set or 0.0) if motor_on else 0.0,
                 "load": None,
             }
-            d["can_ok"] = (time.time() - last_temp_time) < LINK_TIMEOUT_S
+            now = time.time()
+            wd_age = (now - last_watchdog_time) if last_watchdog_time else None
+            temp_age = (now - last_temp_time) if last_temp_time else None
+            change = self.link_monitor.update(now, latest_watchdog, wd_age, temp_age)
+            link = self.link_monitor.snapshot()
+            d["can_ok"] = link["ok"]
+            d["watchdog"] = {"status": latest_watchdog, "status_age": wd_age, "link": link,
+                             "alarms": build_alarms(link, latest_watchdog, wd_age, now),
+                             "logs": list(log_entries)}
+            d["link_change"] = change
             servo = blank_servo()
             servo.update({k: (list(v) if isinstance(v, list) else v)
                           for k, v in latest_servo.items()})
             servo["link"] = (time.time() - last_servo_time) < SERVO_LINK_TIMEOUT_S
             d["servo"] = servo
         return d
+
+    # --- CAN link alarm ---
+    def handle_link_alarm(self, data):
+        change = data.get("link_change")
+        link = data["watchdog"]["link"]
+        if change == "failed":
+            rospy.logerr(f"GUI: CAN LINK FAILURE - {link['reason']}")
+            self.message_var.set(f"CAN LINK FAILURE: {link['reason']}")
+            if self.link_popup is None:
+                self.link_popup = LinkAlarmPopup(self.master, self.acknowledge_link_alarm,
+                                                 link["reason"], link["failed_at"])
+            else:
+                self.link_popup.failed(link["reason"], link["failed_at"])
+        elif change == "restored":
+            rospy.logwarn("GUI: CAN link restored.")
+            self.message_var.set("CAN link restored." if link["acked"]
+                                 else "CAN link restored - acknowledge the alarm.")
+            if self.link_popup is not None:
+                self.link_popup.restored(link["restored_at"])
+
+        # Tab label shows when there is something to look at
+        n = len(data["watchdog"]["alarms"])
+        text = "⚠ Watchdog" if not link["ok"] else (f"Watchdog ({n})" if n else "Watchdog")
+        if text != self._watchdog_tab_text:
+            self.notebook.tab(self.watchdog_frame, text=text)
+            self._watchdog_tab_text = text
+
+    def acknowledge_link_alarm(self):
+        self.link_popup = None
+        self.link_monitor.acknowledge()
+        state = "link still DOWN" if not self.link_monitor.ok else "link OK"
+        rospy.loginfo(f"GUI: CAN link alarm acknowledged by operator ({state}).")
+        self.message_var.set(f"CAN link alarm acknowledged ({state}).")
 
     # --- Commands from the Extruder page ---
     def open_setpoint_pad(self, zone_id):
@@ -492,6 +578,8 @@ class ExtruderGUI(tk.Frame):
             self.dashboard_frame.set_data(data)
             self.extruder_frame.set_data(data)
             self.servo_frame.set_data(data)
+            self.watchdog_frame.set_data(data)
+            self.handle_link_alarm(data)
 
         except Exception as e:
             err_msg = f"G_POLL: Error during GUI update: {e}"

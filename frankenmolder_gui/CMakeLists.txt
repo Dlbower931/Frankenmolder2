@@ -15,5 +15,6 @@ install(PROGRAMS
   src/extruder_page.py
   src/hmi.py
   src/servo_page.py
+  src/watchdog_page.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

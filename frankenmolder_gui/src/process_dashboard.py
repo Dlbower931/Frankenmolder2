@@ -378,7 +378,9 @@ class ControlRoomDashboard(HmiCanvas):
         tiles = [
             ("HEAT", "READY", all(z.get("state") == "PID" for z in zones), C["ok"]),
             ("DRIVE", "RUN", self._motor_on(), C["ok"]),
-            ("CAN", "LINK", d.get("can_ok"), C["ok"]),
+            # always lit: green when the link is up, flashing red when it is down
+            ("CAN", "LINK" if d.get("can_ok") else "DOWN", True,
+             C["ok"] if d.get("can_ok") else C["alarm"]),
             ("MOLD", "CLOSED", d["clamp"].get("wired") and d["clamp"].get("status") == "CLOSED", C["ok"]),
             ("OVER", "TEMP", any(_valid(z.get("act")) and _valid(z.get("set")) and
                                  z["act"] > z["set"] + 15 for z in zones), C["alarm"]),
