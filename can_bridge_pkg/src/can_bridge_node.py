@@ -10,6 +10,8 @@ Also sends a 1Hz heartbeat to the ESP32 to prevent watchdog timeout.
 import rospy
 import can
 import struct # Used to unpack/pack bytes
+import json
+import time
 import os
 import sys
 from std_msgs.msg import Float32, Int32, String
@@ -52,7 +54,20 @@ CAN_ID_STATUS_SERVO_POS = 0x131  # [i32 position][i32 target_hz echo]
 SERVO_CMD_CODES = {"RUN": 1, "STOP": 2, "ESTOP": 3, "ZERO": 4}
 SERVO_STATES = {0: "IDLE", 1: "RUNNING", 2: "MOVING", 3: "STOPPING", 4: "FAULT"}
 SERVO_FLAG_NAMES = ((0x01, "ALARM"), (0x02, "WATCHDOG"), (0x04, "AT_SPEED"), (0x08, "ALARM_INPUT"),
-                    (0x10, "SON"))
+                    (0x10, "SON"), (0x20, "MODBUS"))
+
+# --- Servo drive over RS-485 Modbus, relayed by the ESP32 (see esp32_firmware/servo_modbus.h) ---
+CAN_ID_STATUS_SERVO_DRIVE1 = 0x132  # [i16 rpm][i16 torque %][i16 current 0.1 A][u16 alarm code]
+CAN_ID_STATUS_SERVO_DRIVE2 = 0x133  # [i32 deviation][u8 load %][u8 flags][u16 errors]
+CAN_ID_STATUS_SERVO_PARAM = 0x134   # [u8 op][u8 status][u16 param][i16 value]
+CAN_ID_CMD_SERVO_PARAM = 0x233      # [u8 op][u8 0][u16 param][i16 value]
+PARAM_OPS = {"READ": 1, "WRITE": 2, "SAVE": 3}
+PARAM_OP_NAMES = {v: k for k, v in PARAM_OPS.items()}
+PARAM_STATUS = {0: "OK", 1: "TIMEOUT", 2: "BAD FRAME", 3: "BUSY", 4: "RS-485 NOT SET UP"}
+MODBUS_EXCEPTIONS = {1: "illegal function", 2: "illegal address", 3: "illegal value",
+                     4: "drive failure", 5: "acknowledge", 6: "drive busy"}
+EXPECTED_PR029 = 5                  # electronic gear the rpm -> Hz maths assumes
+PARAM_CHECK_PERIOD_S = 5.0
 
 # Screw drive scaling: drive set to Pr029 = 5 -> 2000 pulses per motor rev, 30:1 gearbox
 SERVO_PULSES_PER_REV = 2000
@@ -79,6 +94,38 @@ def unpack_servo_status(data):
 def unpack_servo_pos(data):
     """-> (position_pulses, target_hz_echo)"""
     return struct.unpack('<ii', bytes(data[:8]))
+
+
+def pack_servo_param(op, param, value=0):
+    return list(struct.pack('<BBHh', op, 0, int(param), int(value)))
+
+
+def unpack_servo_param(data):
+    """-> (op_name, status_text, ok, param, value)"""
+    op, status, param, value = struct.unpack('<BBHh', bytes(data[:6]))
+    if status & 0x80:
+        text = f"drive exception: {MODBUS_EXCEPTIONS.get(status & 0x7F, status & 0x7F)}"
+    else:
+        text = PARAM_STATUS.get(status, f"status {status}")
+    return PARAM_OP_NAMES.get(op, f"OP{op}"), text, status == 0, param, value
+
+
+def parse_param_cmd(text):
+    """'read 29' / 'write 29 5' / 'save' -> (op, param, value); raises ValueError."""
+    parts = text.replace("=", " ").replace("Pr", "").replace("pr", "").split()
+    if not parts:
+        raise ValueError("empty command")
+    op = parts[0].upper()
+    if op == "SAVE" and len(parts) == 1:
+        return PARAM_OPS["SAVE"], 0, 0
+    if op == "READ" and len(parts) == 2:
+        return PARAM_OPS["READ"], int(parts[1]), 0
+    if op == "WRITE" and len(parts) == 3:
+        value = int(parts[2])
+        if not -32768 <= value <= 32767:
+            raise ValueError("value out of 16-bit range")
+        return PARAM_OPS["WRITE"], int(parts[1]), value
+    raise ValueError("use 'read <param>', 'write <param> <value>' or 'save'")
 
 
 class CANBridgeNode:
@@ -115,6 +162,13 @@ class CANBridgeNode:
         self.motor_rpm_pub = rospy.Publisher('/extruder/motor/actual_rpm', Float32, queue_size=10)
         self.motor_flags_pub = rospy.Publisher('/extruder/motor/flags', String, queue_size=10, latch=True)
         self.motor_pos_pub = rospy.Publisher('/extruder/motor/position', Int32, queue_size=10)
+        # Drive data read over RS-485 (JSON, ~10 Hz) and parameter replies
+        self.drive_status_pub = rospy.Publisher('/extruder/motor/drive_status', String, queue_size=10)
+        self.param_reply_pub = rospy.Publisher('/extruder/motor/param_reply', String, queue_size=10)
+        self.drive = {"rpm": None, "torque": None, "current": None, "alarm_code": None,
+                      "deviation": None, "load": None, "modbus_ok": False, "modbus_errors": None,
+                      "pr029": None}
+        self.pr029_checked_at = 0.0
         # Screw drive settings; 0x231 always carries speed, direction and accel together
         self.motor_rpm = 0.0          # screw rpm, >= 0
         self.motor_direction = 1      # +1 FWD, -1 REV
@@ -166,9 +220,13 @@ class CANBridgeNode:
         rospy.Subscriber('/extruder/zone4/setpoint', Float32, lambda msg: self.ros_heater_setpoint_callback(msg, "zone4"))
 
         rospy.Subscriber('/extruder/motor/direction', String, self.ros_motor_direction_callback)
+        # e.g. rostopic pub -1 /extruder/motor/param_cmd std_msgs/String "read 29"
+        rospy.Subscriber('/extruder/motor/param_cmd', String, self.ros_param_cmd_callback)
 
         # --- ADDED: Start the heartbeat timer ---
         self.heartbeat_timer = rospy.Timer(rospy.Duration(1.0 / HEARTBEAT_RATE_HZ), self.send_heartbeat_callback)
+        # Confirm the drive's electronic gear (Pr029) once the RS-485 link is up
+        self.param_check_timer = rospy.Timer(rospy.Duration(PARAM_CHECK_PERIOD_S), self.check_pr029_callback)
         
         rospy.loginfo("CAN Bridge Node initialized. Listening for ROS topics and CAN messages.")
 
@@ -252,6 +310,43 @@ class CANBridgeNode:
             self.send_can_float(can_id, setpoint_value)
         else:
             rospy.logwarn(f"ROS->CAN: No CAN ID defined for setpoint on {zone_id}")
+
+    # --- Servo drive parameters (RS-485 via the ESP32) ---
+    def ros_param_cmd_callback(self, msg):
+        try:
+            op, param, value = parse_param_cmd(msg.data)
+        except ValueError as e:
+            rospy.logwarn(f"ROS->CAN: bad param command '{msg.data}': {e}")
+            self.param_reply_pub.publish(String(f"ERROR '{msg.data}': {e}"))
+            return
+        if op == PARAM_OPS["WRITE"] and param in (29, 30):
+            self.pr029_checked_at = 0.0          # re-check the gear after it changes
+        rospy.loginfo(f"ROS->CAN: drive param {msg.data}")
+        self.send_can_bytes(CAN_ID_CMD_SERVO_PARAM, pack_servo_param(op, param, value))
+
+    def check_pr029_callback(self, event=None):
+        if self.drive["modbus_ok"] and time.time() - self.pr029_checked_at > 60.0:
+            self.send_can_bytes(CAN_ID_CMD_SERVO_PARAM, pack_servo_param(PARAM_OPS["READ"], 29))
+
+    def handle_param_reply(self, data):
+        op, text, ok, param, value = unpack_servo_param(data)
+        if op == "SAVE":
+            reply = f"SAVE to EEPROM: {text}"
+        elif ok:
+            reply = f"Pr{param:03d} = {value}" + (" (written)" if op == "WRITE" else "")
+        else:
+            reply = f"Pr{param:03d} {op} FAILED: {text}"
+        (rospy.loginfo if ok else rospy.logwarn)(f"CAN->ROS: drive {reply}")
+        self.param_reply_pub.publish(String(reply))
+        if ok and param == 29 and op in ("READ", "WRITE"):
+            self.pr029_checked_at = time.time()
+            self.drive["pr029"] = value
+            if value != EXPECTED_PR029:
+                rospy.logerr(f"Servo drive Pr029 = {value}, expected {EXPECTED_PR029}: screw rpm "
+                             f"shown and commanded will be wrong!")
+
+    def publish_drive_status(self):
+        self.drive_status_pub.publish(String(json.dumps(self.drive)))
 
     # --- CAN Sending Methods ---
     
@@ -365,6 +460,25 @@ class CANBridgeNode:
                 elif message.arbitration_id == CAN_ID_STATUS_SERVO_POS and message.dlc == 8:
                     position, _target_echo = unpack_servo_pos(message.data)
                     self.motor_pos_pub.publish(Int32(position))
+
+                # --- Servo drive data over RS-485 ---
+                elif message.arbitration_id == CAN_ID_STATUS_SERVO_DRIVE1 and message.dlc == 8:
+                    rpm, torque, current, alarm = struct.unpack('<hhhH', bytes(message.data[:8]))
+                    if alarm and alarm != self.drive["alarm_code"]:
+                        rospy.logerr(f"Servo drive ALARM code {alarm}")
+                    self.drive.update(rpm=rpm, torque=torque, current=current / 10.0,
+                                      alarm_code=alarm)
+                elif message.arbitration_id == CAN_ID_STATUS_SERVO_DRIVE2 and message.dlc == 8:
+                    deviation, load, flags, errors = struct.unpack('<iBBH', bytes(message.data[:8]))
+                    link = bool(flags & 0x01)
+                    if link != self.drive["modbus_ok"]:
+                        (rospy.loginfo if link else rospy.logwarn)(
+                            f"Servo drive RS-485 link {'UP' if link else 'DOWN'}")
+                    self.drive.update(deviation=deviation, load=load, modbus_ok=link,
+                                      modbus_errors=errors)
+                    self.publish_drive_status()   # 0x133 closes each 100 ms status set
+                elif message.arbitration_id == CAN_ID_STATUS_SERVO_PARAM and message.dlc >= 6:
+                    self.handle_param_reply(message.data)
 
         except rospy.ROSInterruptException:
             pass

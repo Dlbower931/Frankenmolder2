@@ -22,8 +22,8 @@ import time
 import tkinter as tk
 from collections import deque
 
-from hmi import (C, LAMP, PSI_MAX, RPM_MAX, STATE_COLORS, TEMP_MAX, HmiCanvas,
-                 _valid, blend, temp_color)
+from hmi import (C, EXTRUDER_ZONES, INJECTION_ZONES, LAMP, PSI_MAX, RPM_MAX, STATE_COLORS,
+                 TEMP_MAX, HmiCanvas, _valid, blend, temp_color)
 
 CX = 473  # injection chamber + mold centre line (middle of the centre column)
 CYCLE_STEPS = ("LOAD", "INJECT", "HOLD", "COOL", "EJECT")
@@ -104,13 +104,14 @@ class ControlRoomDashboard(HmiCanvas):
         self.begin()
         running = self._motor_on()
         self.background()
-        self.title_bar(*self.heaters_ready_text(d))
+        self.title_bar(*self._heat_status(d))
 
         self._barrel(d, running)
         self._motor_panel(d)
         self._hopper(d)
         y0, y1 = self.ROW_A
-        for i, (x0, title) in enumerate(((274, "Z1 FEED"), (467, "Z2 TRANS"), (660, "Z3 METER"))):
+        for i, (x0, title) in enumerate(((274, "EXT Z1 FEED"), (467, "EXT Z2 TRANS"),
+                                         (660, "EXT Z3 METER"))):
             self._zone_panel(x0, y0, x0 + 185, y1, f"zone{i + 1}", title)
         self._head(d, running)
         self._cycle(d)
@@ -119,17 +120,40 @@ class ControlRoomDashboard(HmiCanvas):
         self._mold(d)
         self._annunciator(d)
 
+    def _ready(self, d, zone_ids):
+        return all(d["zones"][z].get("state") == "PID" for z in zone_ids)
+
+    def _heat_status(self, d):
+        """Title bar: extruder heaters Z1-Z3 and the injection barrel Z4 reported separately."""
+        ext = sum(1 for z in EXTRUDER_ZONES if d["zones"][z].get("state") == "PID")
+        inj = str(d["zones"][INJECTION_ZONES[0]].get("state") or "OFF").upper()
+        inj_txt = {"PID": "AT TEMP", "HEATING": "HEATING"}.get(inj, inj)
+        n = len(EXTRUDER_ZONES)
+        all_ready = ext == n and inj == "PID"
+        any_ready = ext or inj == "PID"
+        return (f"EXTRUDER {ext}/{n} AT TEMP  ·  INJ BARREL {inj_txt}",
+                C["ok"] if all_ready else C["warn"] if any_ready else C["dim"])
+
     # ------------------------------------------------------------ extrusion row
     def _hopper(self, d):
+        """No level sensor yet: an unwired hopper is treated as always full (infinite supply)."""
         h = d["hopper"]
         w = h.get("wired")
         x0, y0, x1, y1 = 176, self.ROW_A[0], 266, self.ROW_A[1]
-        self.panel(x0, y0, x1, y1, "HOPPER", chip=False, wired=w)
+        self.panel(x0, y0, x1, y1, "HOPPER", chip=False)
         fx0, fx1, top, mid, bot = x0 + 12, x1 - 12, y0 + 38, y0 + 74, y0 + 104
         tx0, tx1 = (x0 + x1) / 2 - 10, (x0 + x1) / 2 + 10
         self.poly(fx0, top, fx1, top, fx1, mid, tx1, bot, tx0, bot, fx0, mid,
                   fill=C["well"], outline=C["steel_hi"], width=max(1, 1.5 * self.s))
-        lvl = h.get("level") if w else None
+        if not w:
+            self.poly(fx0, top, fx1, top, fx1, mid, tx1, bot, tx0, bot, fx0, mid,
+                      fill="#6b4a2a", outline="")
+            self.text((x0 + x1) / 2, y0 + 119, "FULL", 20, mono=True, bold=True, fill=C["value"])
+            self.text((x0 + x1) / 2, y1 - 14, "NO SENSOR", 12, mono=True, bold=True,
+                      fill=C["dim"])
+            self.rect(tx0, y1, tx1, 208, fill=C["steel"], outline=C["steel_hi"])
+            return
+        lvl = h.get("level")
         if _valid(lvl):
             y = bot - (bot - top) * max(0.0, min(1.0, lvl / 100))
             if y > mid:  # in the taper
@@ -164,6 +188,8 @@ class ControlRoomDashboard(HmiCanvas):
         for i, x0 in enumerate((274, 467, 660)):
             z = d["zones"][f"zone{i + 1}"]
             self._band_h(x0 + 14, x0 + 171, z.get("act"), z.get("state"))
+        self.text(470, 255, "EXTRUDER BARREL  ·  HEATERS Z1-Z3", 12, mono=True, bold=True,
+                  fill=C["dim"])
 
     def _band_h(self, x0, x1, act, state):
         col = temp_color(act)
@@ -219,11 +245,11 @@ class ControlRoomDashboard(HmiCanvas):
         yb = y1 - 15
         self.text(x0 + 8, yb, "SET", self.T_UNIT, anchor="w", fill=C["dim"])
         rs = m.get("rpm_set")
-        self.text(x0 + 40, yb, f"{rs:.1f}" if _valid(rs) else "---", 16, mono=True, bold=True,
+        self.text(x0 + 36, yb, f"{rs:.1f}" if _valid(rs) else "---", 15, mono=True, bold=True,
                   anchor="w", fill=C["setp"] if _valid(rs) else C["dim"])
         load = m.get("load")
-        self.text(x1 - 46, yb, "LOAD", self.T_UNIT, anchor="e", fill=C["dim"])
-        self.text(x1 - 8, yb, f"{load:.0f}%" if _valid(load) else "---", 16, mono=True,
+        self.text(x1 - 44, yb, "LOAD", self.T_UNIT, anchor="e", fill=C["dim"])
+        self.text(x1 - 8, yb, f"{load:.0f}%" if _valid(load) else "---", 15, mono=True,
                   bold=True, anchor="e",
                   fill=C["alarm"] if _valid(load) and load > 85 else C["value"])
 
@@ -284,7 +310,7 @@ class ControlRoomDashboard(HmiCanvas):
         self.cell(x0 + 108, cy, "SHOT WT", inj.get("shot_weight"), "g", wired=w)
         self.cell(x0 + 200, cy, "SPEED", inj.get("speed"), "mm/s", "{:.0f}", wired=w)
         self._chamber(d)
-        self._zone_panel(656, self.ROW_C, 830, self.ROW_C + 152, "zone4", "Z4 CHAMBER")
+        self._zone_panel(656, self.ROW_C, 830, self.ROW_C + 152, "zone4", "INJ BARREL")
 
     def _clamp(self, d):
         cl = d["clamp"]
@@ -376,12 +402,12 @@ class ControlRoomDashboard(HmiCanvas):
         zones = d["zones"].values()
         blink = int(time.time() * 2) % 2 == 0
         tiles = [
-            ("HEAT", "READY", all(z.get("state") == "PID" for z in zones), C["ok"]),
+            ("EXTR", "READY", self._ready(d, EXTRUDER_ZONES), C["ok"]),
+            ("INJ", "READY", self._ready(d, INJECTION_ZONES), C["ok"]),
             ("DRIVE", "RUN", self._motor_on(), C["ok"]),
             # always lit: green when the link is up, flashing red when it is down
             ("CAN", "LINK" if d.get("can_ok") else "DOWN", True,
              C["ok"] if d.get("can_ok") else C["alarm"]),
-            ("MOLD", "CLOSED", d["clamp"].get("wired") and d["clamp"].get("status") == "CLOSED", C["ok"]),
             ("OVER", "TEMP", any(_valid(z.get("act")) and _valid(z.get("set")) and
                                  z["act"] > z["set"] + 15 for z in zones), C["alarm"]),
             ("TC", "FAULT", any(z.get("state") == "FAULT" or

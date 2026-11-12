@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Frankenmolder - Watchdog page: CAN link health, active alarms and the ROS log.
+Frankenmolder - Watchdog page: CAN link health, active alarms, and a switchable view of
+live sensor readouts (default), the ROS log, or raw CAN frames.
 
 Pieces:
     LinkMonitor      decides whether the CAN link is up, from the watchdog node's
@@ -9,14 +10,20 @@ Pieces:
     build_alarms()   list of active alarms for the page.
     WatchdogPage     the tab (HmiCanvas). set_data() reads data["watchdog"]:
                        {"status": <decoded /watchdog/status or None>, "status_age": s|None,
-                        "link": LinkMonitor.snapshot(), "alarms": [...], "logs": [...]}
+                        "link": LinkMonitor.snapshot(), "alarms": [...], "logs": [...],
+                        "sensors": [...], "raw_can": [...]}
                      logs are newest-last dicts {"t", "lvl", "node", "msg"}.
+                     sensors are rows {"name", "value", "unit", "info", "level", "age"}
+                     (level: ok / warn / alarm / dim; value already formatted or None).
+                     raw_can are newest-last dicts {"t", "id", "data": bytes} from
+                     /can_bus_raw_string (frames the Pi received from the ESP32).
     LinkAlarmPopup   flashing must-acknowledge popup shown when the link fails.
 
 Standalone preview with a simulated link failure:  python3 watchdog_page.py
 """
 
 import re
+import struct
 import time
 import tkinter as tk
 
@@ -27,6 +34,56 @@ LEVEL_COLORS = {"DEBUG": C["dim"], "INFO": C["text"], "WARN": C["warn"], "ERROR"
                 "FATAL": C["alarm"]}
 FILTERS = (("ALL", 0), ("WARN+", 2), ("ERROR", 3))   # minimum index into LOG_LEVELS
 ROSOUT_LEVELS = {1: "DEBUG", 2: "INFO", 4: "WARN", 8: "ERROR", 16: "FATAL"}
+VIEWS = ("SENSORS", "ROS LOG", "RAW CAN")
+STALE_S = 2.0   # a sensor reading older than this is shown in amber
+
+# CAN IDs -> short names (must match can_bridge_node.py / the ESP32 firmware)
+CAN_NAMES = {0x101: "Z1 TEMP", 0x102: "Z2 TEMP", 0x103: "Z3 TEMP", 0x104: "Z4 TEMP",
+             0x111: "Z1 STATE", 0x112: "Z2 STATE", 0x113: "Z3 STATE", 0x114: "Z4 STATE",
+             0x130: "SERVO STAT", 0x131: "SERVO POS", 0x132: "DRIVE 1", 0x133: "DRIVE 2",
+             0x134: "PARAM REPLY", 0x200: "HEARTBEAT", 0x201: "Z1 SETP", 0x202: "Z2 SETP",
+             0x203: "Z3 SETP", 0x204: "Z4 SETP", 0x210: "HEAT CMD", 0x230: "SERVO CMD",
+             0x231: "SERVO SPEED", 0x232: "SERVO MOVE", 0x233: "PARAM CMD"}
+SERVO_STATES = {0: "IDLE", 1: "RUNNING", 2: "MOVING", 3: "STOPPING", 4: "FAULT"}
+_RAW_RE = re.compile(r"Timestamp:\s*([\d.]+).*?ID:\s*([0-9a-fA-F]+).*?DL:\s*(\d+)\s+"
+                     r"((?:[0-9a-fA-F]{2}\s)*)")
+
+
+def parse_raw_can(text, now=None):
+    """python-can's str(Message) -> {"t", "id", "data"}; None if it does not parse."""
+    m = _RAW_RE.search(text + " ")
+    if not m:
+        return None
+    data = bytes(int(b, 16) for b in m.group(4).split())[:int(m.group(3))]
+    return {"t": float(m.group(1)) or (now or time.time()), "id": int(m.group(2), 16),
+            "data": data}
+
+
+def decode_can(can_id, data):
+    """Human-readable value of a frame, or '' if unknown."""
+    try:
+        if 0x101 <= can_id <= 0x104 and len(data) == 4:
+            v = struct.unpack("<f", data)[0]
+            return "FAULT (NaN)" if v != v else f"{v:.1f} °C"
+        if 0x201 <= can_id <= 0x204 and len(data) == 4:
+            return f"set {struct.unpack('<f', data)[0]:.1f} °C"
+        if 0x111 <= can_id <= 0x114:
+            return data.decode("ascii", "replace").strip("\x00")
+        if can_id == 0x130 and len(data) == 8:
+            st, flags, hz = struct.unpack("<BB2xf", data)
+            return f"{SERVO_STATES.get(st, st)} {hz:.0f} Hz f=0x{flags:02X}"
+        if can_id == 0x131 and len(data) == 8:
+            pos, tgt = struct.unpack("<ii", data)
+            return f"pos {pos} tgt {tgt} Hz"
+        if can_id == 0x231 and len(data) == 8:
+            hz, acc = struct.unpack("<ff", data)
+            return f"{hz:+.0f} Hz acc {acc:.0f}"
+        if can_id == 0x132 and len(data) == 8:
+            rpm, tq, cur, alm = struct.unpack("<hhhH", data)
+            return f"{rpm} rpm {tq}% alm {alm}"
+    except (struct.error, ValueError):
+        pass
+    return ""
 
 
 def short_node(name):
@@ -134,13 +191,16 @@ class WatchdogPage(HmiCanvas):
     LOG_Y = (180, 520)
     ROW_H = 20
 
-    def __init__(self, parent, on_clear_logs=None, tick_ms=250, **kw):
+    def __init__(self, parent, on_clear_logs=None, on_clear_raw=None, tick_ms=250, **kw):
         self.on_clear_logs = on_clear_logs or (lambda: None)
+        self.on_clear_raw = on_clear_raw or (lambda: None)
         self.wd = {"status": None, "status_age": None, "link": LinkMonitor().snapshot(),
-                   "alarms": [], "logs": []}
+                   "alarms": [], "logs": [], "sensors": [], "raw_can": []}
+        self.view = "SENSORS"
         self.filter_idx = 0
         self.scroll = 0
         self.detail = None      # log entry shown full-size
+        self.raw_frozen = None  # raw CAN list while PAUSEd
         super().__init__(parent, tick_ms=tick_ms, **kw)
 
     def set_data(self, data):
@@ -157,6 +217,21 @@ class WatchdogPage(HmiCanvas):
     def _clear(self):
         self.scroll, self.detail = 0, None
         self.on_clear_logs()
+
+    def _set_view(self, view):
+        self.view, self.scroll, self.detail = view, 0, None
+
+    def _toggle_pause(self):
+        self.raw_frozen = None if self.raw_frozen is not None else list(self.wd.get("raw_can", []))
+        self.scroll = 0
+
+    def _clear_raw(self):
+        self.raw_frozen, self.scroll = None, 0
+        self.on_clear_raw()
+
+    def _raw_frames(self):
+        frames = self.raw_frozen if self.raw_frozen is not None else self.wd.get("raw_can", [])
+        return list(reversed(frames))
 
     def _filtered_logs(self):
         lo = FILTERS[self.filter_idx][1]
@@ -178,7 +253,12 @@ class WatchdogPage(HmiCanvas):
         self._can_panel()
         self._topics_panel()
         self._alarm_panel()
-        self._log_panel()
+        if self.view == "SENSORS":
+            self._sensor_panel()
+        elif self.view == "RAW CAN":
+            self._raw_panel()
+        else:
+            self._log_panel()
         if self.detail:
             self._detail_overlay()
 
@@ -300,15 +380,122 @@ class WatchdogPage(HmiCanvas):
             elif a["acked"]:
                 self.chip(x1 - 8, y, "ACKED", C["off"], fg=C["text"], size=11, h=9)
 
+    # ------------------------------------------------------------ right-hand views
+    BTN_W = 86
+
+    def _buttons(self, extra):
+        """Button column: three view selectors, then the view's own buttons.
+        extra: [(label, face, callback, enabled, lamp_on)]"""
+        x1 = self.RIGHT[1]
+        bx0 = x1 - self.BTN_W
+        top, y1 = self.LOG_Y[0] + self.HDR + 4, self.LOG_Y[1] - 6
+        btns = [(v, FACE["blue"], (lambda v=v: self._set_view(v)), True, self.view == v)
+                for v in VIEWS] + list(extra)
+        bh = (y1 - top) / 7
+        for i, (label, face, cb, enabled, lamp) in enumerate(btns):
+            gap = 6 if i == len(VIEWS) else 0     # separate the view selectors
+            self.lamp_button(bx0, top + i * bh + gap, x1 - 4, top + (i + 1) * bh - 2, label, face,
+                             lamp_on=lamp, lamp_color=LAMP["amber"] if i >= len(VIEWS)
+                             else LAMP["blue"], on_press=cb, enabled=enabled, size=11)
+        return bx0
+
+    def _scroll_buttons(self, rows, total):
+        return [("▲ NEWER", FACE["neutral"], lambda: self._scroll(-rows // 2), self.scroll > 0,
+                 self.scroll > 0),
+                ("▼ OLDER", FACE["neutral"], lambda: self._scroll(rows // 2),
+                 self.scroll + rows < total, False)]
+
+    def _sensor_panel(self):
+        x0, x1 = self.RIGHT
+        y0, y1 = self.LOG_Y
+        rows = self.wd.get("sensors", [])
+        stale = sum(1 for r in rows if _valid(r.get("age")) and r["age"] > STALE_S)
+        self.panel(x0, y0, x1, y1, "LIVE SENSOR READOUTS",
+                   chip=f"{stale} STALE" if stale else "LIVE",
+                   chip_color=C["warn"] if stale else C["ok"])
+        bx0 = self._buttons([])
+        top = y0 + self.HDR + 4
+        # column header
+        self.text(x0 + 8, top + 8, "SIGNAL", 11, bold=True, anchor="w", fill=C["dim"])
+        self.text(x0 + 236, top + 8, "VALUE", 11, bold=True, anchor="e", fill=C["dim"])
+        self.text(x0 + 300, top + 8, "DETAIL", 11, bold=True, anchor="w", fill=C["dim"])
+        self.text(bx0 - 10, top + 8, "AGE", 11, bold=True, anchor="e", fill=C["dim"])
+        if not rows:
+            self.text((x0 + bx0) / 2, (top + y1) / 2, "No sensor data yet", 15, fill=C["dim"])
+            return
+        lvl_col = {"ok": C["ok"], "warn": C["warn"], "alarm": C["alarm"], "dim": C["dim"]}
+        n = int((y1 - top - 22) // self.ROW_H)
+        for i, r in enumerate(rows[:n]):
+            y = top + 28 + i * self.ROW_H
+            if i % 2:
+                self.rect(x0 + 2, y - 10, bx0 - 6, y + 10, fill="#0e151d", outline="")
+            age = r.get("age")
+            old = not _valid(age) or age > STALE_S
+            col = lvl_col.get(r.get("level"), C["value"])
+            self.rect(x0 + 6, y - 6, x0 + 10, y + 6, fill=col, outline="")
+            self.text(x0 + 16, y, r["name"], 13, mono=True, anchor="w", fill=C["text"])
+            val = r.get("value")
+            self.text(x0 + 236, y, "---" if val is None else str(val), 14, mono=True, bold=True,
+                      anchor="e", fill=C["dim"] if val is None else col if r.get("level") in
+                      ("warn", "alarm") else C["value"])
+            self.text(x0 + 242, y, r.get("unit", ""), 12, anchor="w", fill=C["dim"])
+            info = r.get("info", "")
+            maxc = int((bx0 - 70 - (x0 + 300)) / 7.2)
+            if len(info) > maxc:
+                info = info[:maxc - 1] + "…"
+            self.text(x0 + 300, y, info, 12, mono=True, anchor="w", fill=C["dim"])
+            self.text(bx0 - 10, y, fmt_age(age), 12, mono=True, anchor="e",
+                      fill=C["warn"] if old else C["dim"])
+
+    def _raw_panel(self):
+        x0, x1 = self.RIGHT
+        y0, y1 = self.LOG_Y
+        frames = self._raw_frames()
+        paused = self.raw_frozen is not None
+        self.panel(x0, y0, x1, y1, "RAW CAN  (received from ESP32)",
+                   chip=f"PAUSED  {len(frames)}" if paused else f"LIVE  {len(frames)}",
+                   chip_color=C["warn"] if paused else C["dim"])
+        rows = int((y1 - y0 - self.HDR - 8) // self.ROW_H)
+        self.scroll = min(self.scroll, max(0, len(frames) - rows))
+        bx0 = self._buttons(self._scroll_buttons(rows, len(frames)) + [
+            ("PAUSE", FACE["neutral"], self._toggle_pause, True, paused),
+            ("CLEAR", FACE["stop"], self._clear_raw, bool(frames), False)])
+        top = y0 + self.HDR + 4
+        if not frames:
+            self.text((x0 + bx0) / 2, (top + y1) / 2, "No CAN frames received", 15, fill=C["dim"])
+            return
+        for i, f in enumerate(frames[self.scroll:self.scroll + rows]):
+            y = top + 10 + i * self.ROW_H
+            if i % 2:
+                self.rect(x0 + 2, y - 10, bx0 - 6, y + 10, fill="#0e151d", outline="")
+            t = f.get("t", 0)
+            ts = time.strftime("%H:%M:%S", time.localtime(t)) + f".{int((t % 1) * 1000):03d}"
+            self.text(x0 + 8, y, ts, 12, mono=True, anchor="w", fill=C["dim"])
+            cid = f.get("id", 0)
+            self.text(x0 + 104, y, f"{cid:03X}", 12, mono=True, bold=True, anchor="w",
+                      fill=C["setp"])
+            self.text(x0 + 138, y, CAN_NAMES.get(cid, "?")[:11], 12, mono=True, anchor="w",
+                      fill=C["text"])
+            data = f.get("data", b"")
+            self.text(x0 + 230, y, " ".join(f"{b:02X}" for b in data), 12, mono=True,
+                      anchor="w", fill=C["value"])
+            dec = decode_can(cid, data)
+            if len(dec) > 19:
+                dec = dec[:18] + "…"
+            self.text(x0 + 408, y, dec, 12, mono=True, anchor="w", fill=C["ok"])
+
     def _log_panel(self):
         x0, x1 = self.RIGHT
         y0, y1 = self.LOG_Y
-        bx0 = x1 - 78                      # button column
         logs = self._filtered_logs()
         fname = FILTERS[self.filter_idx][0]
         self.panel(x0, y0, x1, y1, "ROS LOG", chip=f"{fname}  {len(logs)}", chip_color=C["dim"])
         rows = int((y1 - y0 - self.HDR - 8) // self.ROW_H)
         self.scroll = min(self.scroll, max(0, len(logs) - rows))
+        bx0 = self._buttons(self._scroll_buttons(rows, len(logs)) + [
+            (f"▸ {FILTERS[(self.filter_idx + 1) % len(FILTERS)][0]}", FACE["neutral"],
+             self._cycle_filter, True, False),
+            ("CLEAR", FACE["stop"], self._clear, bool(self.wd.get("logs")), False)])
         top = y0 + self.HDR + 4
         if not logs:
             self.text((x0 + bx0) / 2, (top + y1) / 2, "No log messages", 15, fill=C["dim"])
@@ -330,19 +517,6 @@ class WatchdogPage(HmiCanvas):
             self.text(x0 + 232, y, msg, 12, mono=True, anchor="w",
                       fill=col if lvl in ("WARN", "ERROR", "FATAL") else C["text"])
             self._hot.append((x0 + 2, y - 10, bx0 - 6, y + 10, lambda e=e: self._show(e)))
-
-        # buttons: newer / older / filter / clear
-        by, bh = top, (y1 - 6 - top) / 4
-        btns = (("▲\nNEWER", FACE["neutral"], lambda: self._scroll(-rows // 2), self.scroll > 0),
-                ("▼\nOLDER", FACE["neutral"], lambda: self._scroll(rows // 2),
-                 self.scroll + rows < len(logs)),
-                (f"SHOW\n{FILTERS[(self.filter_idx + 1) % len(FILTERS)][0]}", FACE["blue"],
-                 self._cycle_filter, True),
-                ("CLEAR", FACE["stop"], self._clear, bool(self.wd.get("logs"))))
-        for i, (label, face, cb, enabled) in enumerate(btns):
-            self.lamp_button(bx0, by + i * bh, x1 - 4, by + (i + 1) * bh - 2, label, face,
-                             lamp_on=(i == 0 and self.scroll > 0), lamp_color=LAMP["amber"],
-                             on_press=cb, enabled=enabled, size=12)
 
     def _show(self, entry):
         self.detail = entry

@@ -20,6 +20,12 @@ from collections import deque
 VW, VH = 1000, 525
 TEMP_MAX = 350.0
 RPM_MAX = 60.0
+
+# Heater zones: Z1-Z3 heat the extruder barrel, Z4 heats the injection barrel (chamber)
+EXTRUDER_ZONES = ("zone1", "zone2", "zone3")
+INJECTION_ZONES = ("zone4",)
+ZONE_NAMES = {"zone1": "Z1 EXTR FEED", "zone2": "Z2 EXTR TRANS", "zone3": "Z3 EXTR METER",
+              "zone4": "Z4 INJ BARREL"}
 PSI_MAX = 5000.0
 
 C = {
@@ -330,11 +336,12 @@ class HmiCanvas(tk.Frame):
         self.text(self.VW - 12, 18, time.strftime("%H:%M:%S"), 19, mono=True, bold=True,
                   anchor="e", fill=C["setp"])
 
-    def heaters_ready_text(self, d):
-        zones = d["zones"].values()
-        ready = sum(1 for z in zones if z.get("state") == "PID")
-        n = len(d["zones"])
-        return (f"HEATERS AT TEMP  {ready}/{n}",
+    def heaters_ready_text(self, d, zone_ids=None, label="HEATERS"):
+        """Title-bar status: how many of zone_ids (default all) are at temperature."""
+        ids = [z for z in (zone_ids or d["zones"]) if z in d["zones"]]
+        ready = sum(1 for z in ids if d["zones"][z].get("state") == "PID")
+        n = len(ids)
+        return (f"{label} AT TEMP  {ready}/{n}",
                 C["ok"] if ready == n else C["warn"] if ready else C["dim"])
 
     def event_panel(self, x0, y0, x1, y1, title="EVENTS"):

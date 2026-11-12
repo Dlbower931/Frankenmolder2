@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import rospy
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, Int32, String
 from rosgraph_msgs.msg import Log
 import json
 from collections import deque
@@ -13,8 +13,9 @@ import sys # Added for stderr
 import time
 from process_dashboard import ControlRoomDashboard, blank_data
 from extruder_page import ExtruderPage
-from watchdog_page import (ROSOUT_LEVELS, LinkAlarmPopup, LinkMonitor, WatchdogPage,
-                           build_alarms)
+from injection_page import InjectionPage
+from watchdog_page import (ROSOUT_LEVELS, STALE_S, LinkAlarmPopup, LinkMonitor, WatchdogPage,
+                           build_alarms, parse_raw_can)
 import hmi
 
 # --- Configuration ---
@@ -22,7 +23,7 @@ ZONE_COUNT = 4
 MIN_SETPOINT = 20.0
 MAX_SETPOINT = 350.0
 MAX_RPM = 100.0   # screw RPM limit for the number pad
-GUI_POLL_INTERVAL_MS = 500 # How often the GUI checks for updates
+GUI_POLL_INTERVAL_MS = 250 # How often the GUI checks for updates (also the sensor table refresh)
 
 # --- Shared State (Thread Safety) ---
 # Use dictionaries to store data for each zone
@@ -36,6 +37,10 @@ latest_motor_flags = []
 last_motor_time = 0.0
 MOTOR_LINK_TIMEOUT_S = 1.0  # ESP32 sends servo status every 100 ms
 motor_direction = "FWD"     # operator setting, pushed to the CAN bridge on a latched topic
+# Servo drive data read over RS-485 by the ESP32 (/extruder/motor/drive_status JSON)
+latest_drive = None
+last_drive_time = 0.0
+EXPECTED_PR029 = 5
 # Dashboard extras: echoed setpoints, sensor faults and link health
 latest_setpoints = {f"zone{i+1}": float('nan') for i in range(ZONE_COUNT)}
 latest_error_states = {f"zone{i+1}": "OK" for i in range(ZONE_COUNT)}
@@ -46,6 +51,13 @@ LINK_TIMEOUT_S = 5.0
 latest_watchdog = None
 last_watchdog_time = 0.0
 log_entries = deque(maxlen=500)
+raw_can = deque(maxlen=400)       # parsed /can_bus_raw_string frames
+# When each reading last arrived (time.time()), for the Watchdog sensor table
+temp_times = {f"zone{i+1}": 0.0 for i in range(ZONE_COUNT)}
+state_times = {f"zone{i+1}": 0.0 for i in range(ZONE_COUNT)}
+latest_motor_position = None
+last_rpm_time = last_position_time = 0.0
+SCREW_PULSES_PER_REV = 2000 * 30   # Pr029 = 5 (2000 pulses/motor rev) x 30:1 gearbox
 
 # Lock to prevent race conditions when accessing shared data
 data_lock = Lock()
@@ -223,24 +235,33 @@ class ExtruderGUI(tk.Frame):
         # --- Tab 1: Dashboard (process overview) ---
         self.dashboard_frame = ControlRoomDashboard(
             self.notebook,
-            on_zone_click=lambda zone_id: self.notebook.select(self.extruder_frame),
+            on_zone_click=lambda zone_id: self.notebook.select(
+                self.injection_frame if zone_id in hmi.INJECTION_ZONES else self.extruder_frame),
             on_motor_click=lambda: self.notebook.select(self.extruder_frame),
             tick_ms=150)
         self.notebook.add(self.dashboard_frame, text='Dashboard')
 
-        # --- Tab 2: Extruder (heaters + screw drive) ---
+        # --- Tab 2: Extruder (barrel heaters Z1-Z3 + screw drive) ---
         self.extruder_frame = ExtruderPage(
             self.notebook,
             on_setpoint_tap=self.open_setpoint_pad,
             on_zone_cmd=self.publish_state_cmd,
-            on_all_cmd=self.publish_all_zones_cmd,
+            on_all_cmd=self.publish_extruder_zones_cmd,
             on_rpm_tap=self.open_rpm_pad,
             on_motor_cmd=self.publish_motor_cmd,
             on_direction_cmd=self.publish_motor_direction)
         self.notebook.add(self.extruder_frame, text='Extruder')
 
-        # --- Tab 3: Watchdog (CAN link health, alarms, ROS log) ---
-        self.watchdog_frame = WatchdogPage(self.notebook, on_clear_logs=self.clear_logs)
+        # --- Tab 3: Injection (injection barrel heater Z4; shot metering later) ---
+        self.injection_frame = InjectionPage(
+            self.notebook,
+            on_setpoint_tap=self.open_setpoint_pad,
+            on_zone_cmd=self.publish_state_cmd)
+        self.notebook.add(self.injection_frame, text='Injection')
+
+        # --- Tab 4: Watchdog (CAN link health, alarms, sensors, ROS log, raw CAN) ---
+        self.watchdog_frame = WatchdogPage(self.notebook, on_clear_logs=self.clear_logs,
+                                           on_clear_raw=self.clear_raw_can)
         self.notebook.add(self.watchdog_frame, text='Watchdog')
         self._watchdog_tab_text = None
 
@@ -310,9 +331,16 @@ class ExtruderGUI(tk.Frame):
                 '/extruder/motor/actual_rpm', Float32, self.update_motor_rpm_act_callback)
             self.subscribers["motor_flags"] = rospy.Subscriber(
                 '/extruder/motor/flags', String, self.update_motor_flags_callback)
+            self.subscribers["motor_drive_status"] = rospy.Subscriber(
+                '/extruder/motor/drive_status', String, self.update_drive_status_callback)
             self.subscribers["motor_set_rpm_echo"] = rospy.Subscriber(
                 '/extruder/motor/set_rpm', Float32, self.update_motor_rpm_set_callback
             )
+            self.subscribers["motor_position"] = rospy.Subscriber(
+                '/extruder/motor/position', Int32, self.update_motor_position_callback)
+            # Every CAN frame the Pi receives (Watchdog tab, RAW CAN view)
+            self.subscribers["raw_can"] = rospy.Subscriber(
+                '/can_bus_raw_string', String, self.update_raw_can_callback, queue_size=200)
 
             # --- Watchdog ---
             self.subscribers["watchdog_status"] = rospy.Subscriber(
@@ -337,7 +365,7 @@ class ExtruderGUI(tk.Frame):
             with data_lock:
                 global last_temp_time
                 latest_temps[zone_id] = temp_msg.data
-                last_temp_time = time.time()
+                last_temp_time = temp_times[zone_id] = time.time()
         except Exception as e:
             rospy.logerr(f"R_TEMP_CB ({zone_id}): Error storing temp data: {e}")
 
@@ -347,6 +375,7 @@ class ExtruderGUI(tk.Frame):
         try:
             with data_lock:
                 latest_actual_states[zone_id] = state_msg.data
+                state_times[zone_id] = time.time()
         except Exception as e:
             rospy.logerr(f"R_STATE_CB ({zone_id}): Error storing state data: {e}")
 
@@ -362,13 +391,41 @@ class ExtruderGUI(tk.Frame):
 
     def update_motor_rpm_act_callback(self, msg):
         with data_lock:
-            global latest_motor_rpm_act
+            global latest_motor_rpm_act, last_rpm_time
             latest_motor_rpm_act = msg.data
+            last_rpm_time = time.time()
+
+    def update_motor_position_callback(self, msg):
+        with data_lock:
+            global latest_motor_position, last_position_time
+            latest_motor_position = msg.data
+            last_position_time = time.time()
+
+    def update_raw_can_callback(self, msg):
+        frame = parse_raw_can(msg.data)
+        if frame:
+            with data_lock:
+                raw_can.append(frame)
+
+    def clear_raw_can(self):
+        with data_lock:
+            raw_can.clear()
 
     def update_motor_flags_callback(self, msg):
         with data_lock:
             global latest_motor_flags
             latest_motor_flags = [f for f in msg.data.split(",") if f]
+
+    def update_drive_status_callback(self, msg):
+        try:
+            status = json.loads(msg.data)
+        except ValueError as e:
+            rospy.logwarn_throttle(30, f"GUI: bad drive_status JSON: {e}")
+            return
+        with data_lock:
+            global latest_drive, last_drive_time
+            latest_drive = status
+            last_drive_time = time.time()
 
     def update_setpoint_callback(self, msg, zone_id):
         with data_lock:
@@ -420,12 +477,19 @@ class ExtruderGUI(tk.Frame):
                 }
             now = time.time()
             motor_link = (now - last_motor_time) < MOTOR_LINK_TIMEOUT_S
+            drive = latest_drive if (motor_link and latest_drive
+                                     and now - last_drive_time < MOTOR_LINK_TIMEOUT_S) else None
+            modbus_ok = bool(drive and drive.get("modbus_ok"))
             d["motor"] = {
                 # servo state from the ESP32; None when its status frames stop arriving
                 "state": latest_motor_state if motor_link else None,
                 "rpm_set": nan_to_none(latest_motor_rpm_set),
                 "rpm_act": nan_to_none(latest_motor_rpm_act) if motor_link else None,
-                "load": None,
+                # torque in % of rated, read from the drive over RS-485
+                "load": drive.get("torque") if modbus_ok else None,
+                "alarm_code": drive.get("alarm_code") if modbus_ok else None,
+                "modbus_ok": modbus_ok,
+                "drive": drive,
                 "direction": motor_direction,
                 "flags": list(latest_motor_flags) if motor_link else [],
                 "link": motor_link,
@@ -435,11 +499,80 @@ class ExtruderGUI(tk.Frame):
             change = self.link_monitor.update(now, latest_watchdog, wd_age, temp_age)
             link = self.link_monitor.snapshot()
             d["can_ok"] = link["ok"]
+            alarms = build_alarms(link, latest_watchdog, wd_age, now) + self.drive_alarms(d["motor"])
+            d["drive_alarm"] = d["motor"]["state"] == "FAULT" or bool(d["motor"]["alarm_code"])
             d["watchdog"] = {"status": latest_watchdog, "status_age": wd_age, "link": link,
-                             "alarms": build_alarms(link, latest_watchdog, wd_age, now),
-                             "logs": list(log_entries)}
+                             "alarms": alarms,
+                             "logs": list(log_entries),
+                             "sensors": self.sensor_rows(d, now),
+                             "raw_can": list(raw_can)}
             d["link_change"] = change
         return d
+
+    @staticmethod
+    def sensor_rows(d, now):
+        """Every live reading for the Watchdog tab (call with data_lock held)."""
+        age = lambda t: (now - t) if t else None
+        rows = []
+        for zone_id, z in d["zones"].items():
+            st = str(z.get("state") or "OFF").upper()
+            act, setp = z.get("act"), z.get("set")
+            fault = st == "FAULT"
+            level = ("alarm" if fault else "ok" if st == "PID" else
+                     "warn" if st in ("HEATING", "HEAT") else "dim")
+            rows.append({"name": hmi.ZONE_NAMES.get(zone_id, zone_id),
+                         "value": "FAULT" if fault else (f"{act:.1f}" if hmi._valid(act) else None),
+                         "unit": "°C", "level": level,
+                         "info": f"set {setp:.0f} °C · {st}" if hmi._valid(setp) else f"no setpoint · {st}",
+                         "age": age(temp_times[zone_id])})
+        m = d["motor"]
+        rpm_act, rpm_set = m.get("rpm_act"), m.get("rpm_set")
+        flags = [f for f in m.get("flags", []) if f != "ALARM_INPUT"]
+        st = m.get("state")
+        rows.append({"name": "Screw speed",
+                     "value": f"{rpm_act:.1f}" if hmi._valid(rpm_act) else None, "unit": "rpm",
+                     "level": "ok" if st == "RUNNING" else "dim",
+                     "info": (f"set {rpm_set:.1f} rpm" if hmi._valid(rpm_set) else "no set rpm")
+                             + f" · {m.get('direction', 'FWD')}",
+                     "age": age(last_rpm_time)})
+        rows.append({"name": "Screw drive", "value": st, "unit": "",
+                     "level": "alarm" if st == "FAULT" else "ok" if st == "RUNNING" else
+                              "warn" if st == "STOPPING" else "dim",
+                     "info": ", ".join(flags) or "no flags", "age": age(last_motor_time)})
+        pos = latest_motor_position
+        rows.append({"name": "Servo position", "value": pos, "unit": "pls", "level": "dim",
+                     "info": f"{pos / SCREW_PULSES_PER_REV:.2f} screw rev" if pos is not None
+                             else "", "age": age(last_position_time)})
+        drive = m.get("drive")
+        if drive is not None:   # only when the RS-485 link to the drive is enabled
+            ok = m.get("modbus_ok")
+            rows.append({"name": "Drive torque", "value": drive.get("torque") if ok else None,
+                         "unit": "%", "level": "dim",
+                         "info": f"{drive.get('current')} A · dev {drive.get('deviation')} pls"
+                                 if ok else "RS-485 link down", "age": age(last_drive_time)})
+        for r in rows:   # anything not updating is amber whatever its state
+            if r["age"] is None or r["age"] > STALE_S:
+                r["level"] = "warn" if r["level"] != "alarm" else "alarm"
+        return rows
+
+    @staticmethod
+    def drive_alarms(m):
+        """Servo drive alarms for the Watchdog tab (only while the ESP32 is reporting)."""
+        drive = m.get("drive")
+        if not m.get("link") or drive is None:   # ESP32 silent, or RS-485 disabled in firmware
+            return []
+        if not m.get("modbus_ok"):
+            return [{"text": "Servo drive RS-485 link down (check CN3 wiring, Pr181 = 1)",
+                     "level": "warn", "acked": None}]
+        alarms = []
+        if m.get("alarm_code"):
+            alarms.append({"text": f"SERVO DRIVE ALARM code {m['alarm_code']} - screw stopped",
+                           "level": "alarm", "acked": None})
+        pr029 = drive.get("pr029") if drive else None
+        if pr029 is not None and pr029 != EXPECTED_PR029:
+            alarms.append({"text": f"Servo drive Pr029 = {pr029}, must be {EXPECTED_PR029} "
+                                   "(screw rpm is wrong)", "level": "alarm", "acked": None})
+        return alarms
 
     # --- CAN link alarm ---
     def handle_link_alarm(self, data):
@@ -506,6 +639,9 @@ class ExtruderGUI(tk.Frame):
             self.message_var.set(f"Error sending {key}: {e}")
             return False
 
+    def _page_for(self, zone_id):
+        return self.injection_frame if zone_id in hmi.INJECTION_ZONES else self.extruder_frame
+
     def publish_setpoint(self, zone_id, value):
         value = float(value)
         if not (MIN_SETPOINT <= value <= MAX_SETPOINT):
@@ -513,15 +649,16 @@ class ExtruderGUI(tk.Frame):
             return
         if self._publish(f"{zone_id}_setpoint", Float32(value),
                          f"{zone_id}: setpoint {value:.1f} °C sent."):
-            self.extruder_frame.log(f"Z{zone_id[-1]} SET {value:.0f}", "cmd")
+            self._page_for(zone_id).log(f"Z{zone_id[-1]} SET {value:.0f}", "cmd")
 
     def publish_state_cmd(self, zone_id, command):
         """command is 'ON' or 'OFF'."""
         self._publish(f"{zone_id}_state_cmd", String(command), f"{zone_id}: {command} sent.")
 
-    def publish_all_zones_cmd(self, command):
-        for i in range(ZONE_COUNT):
-            self.publish_state_cmd(f"zone{i+1}", command)
+    def publish_extruder_zones_cmd(self, command):
+        """ALL HEAT / ALL OFF on the Extruder tab: barrel zones Z1-Z3 only."""
+        for zone_id in hmi.EXTRUDER_ZONES:
+            self.publish_state_cmd(zone_id, command)
 
     def publish_set_rpm(self, value):
         value = float(value)
@@ -550,6 +687,7 @@ class ExtruderGUI(tk.Frame):
             data = self.build_dashboard_data()
             self.dashboard_frame.set_data(data)
             self.extruder_frame.set_data(data)
+            self.injection_frame.set_data(data)
             self.watchdog_frame.set_data(data)
             self.handle_link_alarm(data)
 

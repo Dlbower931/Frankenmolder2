@@ -48,11 +48,14 @@
  *   0x130 SERVO_STATUS [u8 state][u8 flags][2 reserved][f32 actual_hz signed]
  *                      state: 0=IDLE 1=RUNNING 2=MOVING 3=STOPPING 4=FAULT
  *                      flags: bit0 alarm input active, bit1 stopped by heartbeat watchdog,
- *                             bit2 at target speed, bit3 alarm input enabled, bit4 SON on
+ *                             bit2 at target speed, bit3 alarm input enabled, bit4 SON on,
+ *                             bit5 RS-485 Modbus link to the drive OK (servo_modbus.h)
+ *                      "alarm" (bit0) is the ALM input OR a non-zero drive alarm code read over RS-485.
  *   0x131 SERVO_POS    [i32 position pulses][i32 target_hz echo]
  */
 
 #include <FastAccelStepper.h>
+#include "servo_modbus.h"   // RS-485 drive monitoring; its alarm code also faults the servo
 
 // --- Pins ---
 #define SERVO_PULSE_PIN 32
@@ -104,10 +107,9 @@ inline void acServoNoteRx() { servoLastRxMs = millis(); }
 
 static bool acServoAlarmActive() {
 #if SERVO_ALARM_INPUT_ENABLED
-    return digitalRead(SERVO_ALARM_PIN) == HIGH;  // ALM conducts (LOW) when there is no alarm
-#else
-    return false;
+    if (digitalRead(SERVO_ALARM_PIN) == HIGH) return true;  // ALM conducts (LOW) when OK
 #endif
+    return servoModbusAlarm();   // drive alarm code over RS-485
 }
 
 static uint32_t servoClampHz(float hz) {
@@ -283,7 +285,7 @@ static void acServoSendStatus() {
                        max(1.0f, 0.01f * servoClampHz(servoTargetHz));
     uint8_t flags = (acServoAlarmActive() ? 0x01 : 0) | (servoWatchdogTrip ? 0x02 : 0) |
                     (atSpeed ? 0x04 : 0) | (SERVO_ALARM_INPUT_ENABLED ? 0x08 : 0) |
-                    (servoSonOn ? 0x10 : 0);
+                    (servoSonOn ? 0x10 : 0) | (servoModbusLinkOk() ? 0x20 : 0);
 
     CanFrame st = {0};
     st.identifier = CAN_ID_STATUS_SERVO;

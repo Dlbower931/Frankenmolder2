@@ -16,6 +16,7 @@
  * 2. Adafruit MAX31856 Library (by Adafruit)
  * 3. PID (by Brett Beauregard)
  * 4. FastAccelStepper (by gin66), tested with 2.0.1 - AC servo pulse/direction, see ac_servo.h
+ *    (RS-485 Modbus link to the servo drive: servo_modbus.h, no extra library)
  */
 
 #include <Arduino.h>
@@ -184,6 +185,7 @@ void checkCanMessages() {
         lastCanMessageTime = millis();
         acServoNoteRx();
         if (acServoHandleFrame(rxFrame)) return;  // AC servo commands
+        if (servoModbusHandleFrame(rxFrame)) return;  // drive parameter read/write (RS-485)
         
         // Serial.printf("CAN RX ID 0x%X, DLC %d\n", rxFrame.identifier, rxFrame.data_length_code);
         
@@ -416,6 +418,7 @@ void setup() {
 
     // 2b. AC servo pulse/direction generator
     acServoSetup();
+    servoModbusSetup();   // RS-485 Modbus to the drive (CN3)
 
     // 3. Configure PID Controllers
     for (int i = 0; i < NUM_ZONES; i++) {
@@ -458,6 +461,7 @@ void loop() {
 
     // 5b. AC servo: safety checks + status frames
     acServoUpdate();
+    servoModbusUpdate();
 
     // 6. Send status reports periodically
     if (currentMillis - prevStatusMillis >= STATUS_REPORT_PERIOD_MS) {

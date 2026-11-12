@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Frankenmolder - Extruder control page (heaters + screw drive).
+Frankenmolder - Extruder control page: extruder barrel heaters Z1-Z3 + screw drive.
+(Z4, the injection barrel heater, lives on the Injection tab - injection_page.py.)
 
 The screw drive is the AC servo on the ESP32 (see esp32_firmware/ac_servo.h); the CAN
 bridge turns screw rpm + direction into the servo's pulse frequency.
@@ -19,22 +20,25 @@ Standalone preview with simulated data:
 import time
 from collections import deque
 
-from hmi import C, FACE, LAMP, STATE_COLORS, TEMP_MAX, HmiCanvas, _valid, temp_color
+from hmi import (C, EXTRUDER_ZONES, FACE, LAMP, STATE_COLORS, TEMP_MAX, HmiCanvas, _valid,
+                 temp_color)
 from process_dashboard import blank_data
 
 ZONE_TITLES = {"zone1": "Z1 FEED", "zone2": "Z2 TRANSITION",
-               "zone3": "Z3 METERING", "zone4": "Z4 CHAMBER"}
+               "zone3": "Z3 METERING", "zone4": "Z4 INJECTION BARREL"}
 
 
 class ExtruderPage(HmiCanvas):
     HIST_EVERY_S = 1.0
+    ZONE_IDS = EXTRUDER_ZONES      # zones shown on this page
+    HEAT_LABEL = "EXTRUDER HEATERS"
 
     def __init__(self, parent, on_setpoint_tap=None, on_zone_cmd=None, on_all_cmd=None,
                  on_rpm_tap=None, on_motor_cmd=None, on_direction_cmd=None, tick_ms=250, **kw):
         """
         on_setpoint_tap(zone_id)    open the number pad for a zone setpoint
         on_zone_cmd(zone_id, cmd)   cmd is "ON" or "OFF"
-        on_all_cmd(cmd)             same, for every zone
+        on_all_cmd(cmd)             same, for every zone on this page (Z1-Z3)
         on_rpm_tap()                open the number pad for screw RPM
         on_motor_cmd(cmd)           "ON" (start) or "OFF" (stop)
         on_direction_cmd(dir)       "FWD" or "REV" (only offered while the screw is stopped);
@@ -99,11 +103,13 @@ class ExtruderPage(HmiCanvas):
         d = self.data
         self.begin()
         self.background()
-        self.title_bar(*self.heaters_ready_text(d))
+        self.title_bar(*self.heaters_ready_text(d, self.ZONE_IDS, self.HEAT_LABEL))
         y0, y1 = self.CARD_Y
-        for i, zone_id in enumerate(d["zones"]):
-            x0 = 8 + i * 248
-            self._zone_card(x0, y0, x0 + 240, y1, zone_id, d["zones"][zone_id])
+        n, gap = len(self.ZONE_IDS), 8
+        w = (984 - gap * (n - 1)) / n
+        for i, zone_id in enumerate(self.ZONE_IDS):
+            x0 = 8 + i * (w + gap)
+            self._zone_card(x0, y0, x0 + w, y1, zone_id, d["zones"][zone_id])
         self._all_zones(d)
         self._drive(d)
         self.event_panel(760, self.CTRL_Y[0], 992, self.CTRL_Y[1], "COMMANDS")
@@ -150,10 +156,10 @@ class ExtruderPage(HmiCanvas):
     def _all_zones(self, d):
         x0, x1 = 8, 256
         y0, y1 = self.CTRL_Y
-        zones = d["zones"].values()
+        zones = [d["zones"][z] for z in self.ZONE_IDS]
         ready = all(z.get("state") == "PID" for z in zones)
         any_on = any(z.get("state") in ("HEATING", "PID", "HEAT") for z in zones)
-        self.panel(x0, y0, x1, y1, "ALL ZONES", chip="READY" if ready else "COLD",
+        self.panel(x0, y0, x1, y1, "EXTRUDER Z1-Z3", chip="READY" if ready else "COLD",
                    chip_color=C["ok"] if ready else C["off"])
         mid = (x0 + x1) / 2
         self.lamp_button(x0 + 8, y0 + 36, mid - 4, y1 - 6, "ALL\nHEAT", FACE["start"],
@@ -174,8 +180,9 @@ class ExtruderPage(HmiCanvas):
         ready = all(z.get("state") == "PID" for z in d["zones"].values())
         if not link:
             chip, chip_col = "NO LINK", C["alarm"]
-        elif st == "FAULT":
-            chip, chip_col = "FAULT", C["alarm"]
+        elif st == "FAULT" or m.get("alarm_code"):
+            code = m.get("alarm_code")
+            chip, chip_col = (f"DRIVE ALM {code}" if code else "FAULT"), C["alarm"]
         elif on and not ready:   # turning before the barrel is at temperature
             chip, chip_col = "RUN COLD", C["warn"]
         elif on:
@@ -205,7 +212,7 @@ class ExtruderPage(HmiCanvas):
                              on_press=lambda dname=dname: self._direction_cmd(dname))
         self.value_button(x0 + 338, by0, x1 - 8, y0 + 94, "SET RPM", m.get("rpm_set"),
                           "rpm", size=22, on_press=self.on_rpm_tap)
-        self.readout(x0 + 334, x1 - 4, y0 + 116, "ACTUAL", m.get("rpm_act"), "rpm", size=20,
+        self.readout(x0 + 334, x1 - 4, y0 + 116, "ACT", m.get("rpm_act"), "rpm", size=20,
                      color=C["ok"] if on else C["value"])
 
 
